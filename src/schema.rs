@@ -7,6 +7,14 @@ diesel::table! {
 }
 
 diesel::table! {
+    projects (name) {
+        name -> Varchar,
+        description -> Varchar,
+        n_tasks -> Nullable<Int4>,
+    }
+}
+
+diesel::table! {
     tags (name) {
         name -> Varchar,
     }
@@ -40,6 +48,7 @@ diesel::table! {
         description -> Text,
         author -> Varchar,
         assignee -> Nullable<Varchar>,
+        project -> Nullable<Varchar>,
     }
 }
 
@@ -57,9 +66,11 @@ diesel::joinable!(task_tags -> tags (tag_name));
 diesel::joinable!(task_tags -> tasks (task_id));
 diesel::joinable!(task_watchers -> tasks (task_id));
 diesel::joinable!(task_watchers -> users (watcher_username));
+diesel::joinable!(tasks -> projects (project));
 
 diesel::allow_tables_to_appear_in_same_query!(
     components,
+    projects,
     tags,
     task_components,
     task_tags,
