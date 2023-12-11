@@ -1,44 +1,25 @@
 use diesel::prelude::*;
+use serde::Serialize;
+use tokio::sync::broadcast;
+
+use super::project::Project;
 use super::users::User;
 
 
-#[derive(Queryable, Insertable)]
-#[diesel(table_name = crate::schema::projects)]
-pub struct Project {
-    pub name: String,
-    pub description: String,
-    pub n_tasks: i32
-}
-
-impl Project {
-    pub fn create(conn: &mut PgConnection,
-                  name: &str,
-                  description: &str) -> QueryResult<Self> {
-        let project = Self { name: name.to_owned(),
-                             description: description.to_owned(),
-                             n_tasks: 0 };
-
-        diesel::insert_into(crate::schema::projects::table)
-            .values(&project)
-            .execute(conn)?;
-
-        Ok(project)
-    }
-}
-
-#[derive(Queryable, Insertable)]
+#[derive(Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::tasks)]
 pub struct Task {
     pub id: String,
-    pub project: String,
     pub title: String,
     pub description: String,
     pub author: String,
     pub assignee: Option<String>,
+    pub project: Option<String>,
 }
 
 impl Task {
     pub fn create(conn: &mut PgConnection,
+                  sender: &mut broadcast::Sender<Self>,
                   project: &mut Project,
                   title: &str,
                   description: &str,
@@ -49,11 +30,11 @@ impl Task {
 
         let task = Self {
             id: next_id,
-            project: project.name.clone(),
             title: title.to_owned(),
             description: description.to_owned(),
             author: author.username.clone(),
-            assignee: None
+            assignee: None,
+            project: Some(project.name.clone()),
         };
         conn.transaction(|transact| {
             diesel::insert_into(crate::schema::tasks::table)
@@ -64,8 +45,30 @@ impl Task {
                 .execute(transact)?;
             QueryResult::Ok(())
         })?;
+        sender.send(task.clone()).ok();
 
         Ok(task)
+    }
+
+    pub fn get(conn: &mut PgConnection, task_id: &str) -> Option<Self> {
+        use crate::schema::tasks::dsl;
+        let (id, title, description, author, assignee, project) = dsl::tasks.find(task_id)
+            .get_result::<(String, String, String, String, Option<String>, Option<String>)>(conn)
+            .optional()
+            .ok()??;
+        Some(Task{id, title, description, author, assignee, project})
+    }
+
+    pub fn tags(&self) -> Vec<String> {
+        vec![] // TODO
+    }
+
+    pub fn components(&self) -> Vec<String> {
+        vec![] // TODO
+    }
+
+    pub fn watchers(&self) -> Vec<User> {
+        vec![] // TODO
     }
 }
 
