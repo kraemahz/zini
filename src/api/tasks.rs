@@ -2,20 +2,21 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
-use warp::{Reply, Rejection};
+use warp::{Filter, Reply, Rejection};
 
+use crate::router::with_broadcast;
 use crate::tables::{Project, User, Task};
-use crate::session::AuthenticatedUser;
+use crate::session::{AuthenticatedUser, SessionStore, authenticate};
 use super::*;
 
 #[derive(Deserialize)]
 pub struct TaskPayload {
+    project: String,
     title: String, 
     description: Option<String>,
 }
 
-pub async fn create_task_handler(project: String,
-                                 payload: TaskPayload,
+pub async fn create_task_handler(payload: TaskPayload,
                                  auth: AuthenticatedUser,
                                  db_pool: Arc<DbPool>,
                                  mut sender: broadcast::Sender<Task>) -> Result<impl Reply, Rejection> {
@@ -23,6 +24,8 @@ pub async fn create_task_handler(project: String,
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
     };
+
+    let TaskPayload{project, title, description} = payload;
 
     let mut project = match Project::get(&mut conn, &project) {
         Some(project) => project,
@@ -33,8 +36,6 @@ pub async fn create_task_handler(project: String,
         Some(user) => user,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
-
-    let TaskPayload{title, description} = payload;
 
     match Task::create(
         &mut conn,
@@ -91,4 +92,34 @@ pub async fn filter_tasks_handler(payload: QueryPayload,
         .map_err(|_| warp::reject::custom(DatabaseError{}))?;
     let reply = QueryReply{tasks};
     Ok(warp::reply::json(&reply))
+}
+
+
+pub fn task_routes(store: Arc<SessionStore>,
+                   pool: Arc<DbPool>,
+                   task_tx: broadcast::Sender<Task>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+    let create_task = warp::post()
+        .and(warp::body::json())
+        .and(authenticate(store.clone()))
+        .and(with_db(pool.clone()))
+        .and(with_broadcast(task_tx))
+        .and_then(create_task_handler);
+
+    let get_task = warp::get()
+        .and(warp::path::param())
+        .and(authenticate(store.clone()))
+        .and(with_db(pool.clone()))
+        .and_then(get_task_handler);
+
+    let filter_tasks = warp::post()
+        .and(warp::path("query"))
+        .and(warp::body::json())
+        .and(authenticate(store.clone()))
+        .and(with_db(pool.clone()))
+        .and_then(filter_tasks_handler);
+
+    warp::path("task")
+        .and(create_task
+             .or(get_task)
+             .or(filter_tasks))
 }

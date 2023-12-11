@@ -4,7 +4,8 @@ use tokio::sync::broadcast;
 use warp::{Reply, Rejection};
 
 use super::*;
-use crate::session::AuthenticatedUser;
+use crate::router::with_broadcast;
+use crate::session::{AuthenticatedUser, SessionStore, authenticate};
 use crate::tables::Project;
 
 #[derive(Deserialize)]
@@ -47,4 +48,24 @@ pub async fn get_project_handler(project: String,
     };
 
     Ok(warp::reply::json(&project))
+}
+
+pub fn project_routes(store: Arc<SessionStore>,
+                      pool: Arc<DbPool>,
+                      project_tx: broadcast::Sender<Project>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+    let create_project = warp::post()
+        .and(warp::body::json())
+        .and(authenticate(store.clone()))
+        .and(with_db(pool.clone()))
+        .and(with_broadcast(project_tx))
+        .and_then(create_project_handler);
+
+    let get_project = warp::get()
+        .and(warp::path::param())
+        .and(authenticate(store.clone()))
+        .and(with_db(pool.clone()))
+        .and_then(get_project_handler);
+
+    warp::path("project")
+        .and(create_project.or(get_project))
 }
