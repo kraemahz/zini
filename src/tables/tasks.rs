@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use diesel::prelude::*;
 use serde::Serialize;
 use tokio::sync::broadcast;
@@ -52,24 +54,69 @@ impl Task {
 
     pub fn get(conn: &mut PgConnection, task_id: &str) -> Option<Self> {
         use crate::schema::tasks::dsl;
-        let (id, title, description, author, assignee, project) = dsl::tasks.find(task_id)
-            .get_result::<(String, String, String, String, Option<String>, Option<String>)>(conn)
+        let task = dsl::tasks.find(task_id)
+            .get_result::<Task>(conn)
             .optional()
             .ok()??;
-        Some(Task{id, title, description, author, assignee, project})
+        Some(task)
     }
 
-    pub fn tags(&self) -> Vec<String> {
-        vec![] // TODO
+    pub fn tags(&self, conn: &mut PgConnection) -> QueryResult<Vec<String>> {
+        use crate::schema::task_tags;
+        use crate::schema::tags;
+        task_tags::table
+            .inner_join(tags::table)
+            .filter(task_tags::task_id.eq(&self.id))
+            .select(tags::name)
+            .load::<String>(conn)
     }
 
-    pub fn components(&self) -> Vec<String> {
-        vec![] // TODO
+    pub fn components(&self, conn: &mut PgConnection) -> QueryResult<Vec<String>> {
+        use crate::schema::task_components;
+        use crate::schema::components;
+        task_components::table
+            .inner_join(components::table)
+            .filter(task_components::task_id.eq(&self.id))
+            .select(components::name)
+            .load::<String>(conn)
     }
 
-    pub fn watchers(&self) -> Vec<User> {
-        vec![] // TODO
+    pub fn watchers(&self, conn: &mut PgConnection) -> QueryResult<Vec<User>> {
+        use crate::schema::task_watchers;
+        use crate::schema::users;
+        task_watchers::table
+            .inner_join(users::table)
+            .filter(task_watchers::task_id.eq(&self.id))
+            .select(users::all_columns)
+            .load::<User>(conn)
     }
+
+    pub fn query(conn: &mut PgConnection,
+                 query_dict: &HashMap<String, String>,
+                 page: i64,
+                 page_size: i64) -> QueryResult<Vec<Self>> {
+        use crate::schema::tasks::dsl::*;
+
+        let mut query = tasks.into_boxed();
+        for (key, value) in query_dict {
+            match key.as_str() {
+                "id" => query = query.filter(id.eq(value)),
+                "title" => query = query.filter(title.ilike(format!("%{}%", value))),
+                "description" => query = query.filter(description.ilike(format!("%{}%", value))),
+                "author" => query = query.filter(author.eq(value)),
+                "assignee" => query = query.filter(assignee.eq(value)),
+                "project" => query = query.filter(project.eq(value)),
+                _ => {} // Ignore unknown keys or log them if necessary
+            }
+        }
+
+        let offset = page.saturating_sub(1) * page_size;
+
+        query
+            .limit(page_size)
+            .offset(offset)
+            .load::<Task>(conn)
+        }
 }
 
 #[derive(Queryable, Insertable)]

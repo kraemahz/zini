@@ -32,11 +32,11 @@ impl User {
 
     pub fn get(conn: &mut PgConnection, username: &str) -> Option<Self> {
         use crate::schema::users::dsl;
-        let (username, created, email) = dsl::users.find(username)
-            .get_result::<(String, NaiveDateTime, String)>(conn)
+        let user = dsl::users.find(username)
+            .get_result::<User>(conn)
             .optional()
             .ok()??;
-        Some(Self{username, created, email})
+        Some(user)
     }
 
 }

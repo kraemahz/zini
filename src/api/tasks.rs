@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -69,15 +70,25 @@ pub async fn get_task_handler(task_id: String,
 
 #[derive(Deserialize)]
 pub struct QueryPayload {
+    page: i64,
+    page_size: i64,
+    query: HashMap<String, String>
 }
 
 #[derive(Serialize)]
 pub struct QueryReply {
+    tasks: Vec<Task>
 }
 
 pub async fn filter_tasks_handler(payload: QueryPayload,
                                   _auth: AuthenticatedUser,
                                   db_pool: Arc<DbPool>) -> Result<impl Reply, Rejection> {
-    let reply = QueryReply{};
+    let mut conn = match db_pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Err(warp::reject::custom(DatabaseError{})),
+    };
+    let tasks = Task::query(&mut conn, &payload.query, payload.page, payload.page_size)
+        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+    let reply = QueryReply{tasks};
     Ok(warp::reply::json(&reply))
 }
