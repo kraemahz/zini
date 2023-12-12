@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use warp::{Filter, Reply, Rejection};
 
-use crate::router::with_broadcast;
-use crate::tables::{Project, User, Task};
-use crate::session::{AuthenticatedUser, SessionStore, authenticate};
 use super::*;
+use crate::router::with_broadcast;
+use crate::tables::{DbPool, Project, User, Task};
+use crate::session::{AuthenticatedUser, SessionStore, authenticate};
 
 #[derive(Deserialize)]
 pub struct TaskPayload {

@@ -1,20 +1,11 @@
 use std::sync::Arc;
-use diesel::r2d2::{ConnectionManager, Pool};
 use tokio::sync::broadcast;
 use warp::Filter;
-use diesel::prelude::*;
 
 use zini::router::Router;
 use zini::session::{InvalidSessionToken, NoSessionToken, SessionStore};
-use zini::tables::{Project, User, Task};
+use zini::tables::{establish_connection_pool, Project, User, Task};
 use zini::api::*;
-
-fn establish_connection_pool(database_url: &str) -> DbPool {
-    let manager = ConnectionManager::<PgConnection>::new(database_url);
-    Pool::builder()
-        .build(manager)
-        .expect("Failed to create pool.")
-}
 
 async fn handle_rejection(err: warp::reject::Rejection) -> Result<impl warp::Reply, std::convert::Infallible> {
     if let Some(_) = err.find::<ConflictError>() {
@@ -64,4 +55,3 @@ async fn main() {
 
     warp::serve(routes).run(([127, 0, 0, 1], 8080)).await;
 }
-

@@ -6,7 +6,7 @@ use warp::{Filter, Reply, Rejection};
 use super::*;
 use crate::router::with_broadcast;
 use crate::session::SessionStore;
-use crate::tables::User;
+use crate::tables::{DbPool, User};
 
 #[derive(Deserialize)]
 pub struct UserPayload {

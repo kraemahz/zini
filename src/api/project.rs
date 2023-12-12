@@ -6,7 +6,7 @@ use warp::{Reply, Rejection};
 use super::*;
 use crate::router::with_broadcast;
 use crate::session::{AuthenticatedUser, SessionStore, authenticate};
-use crate::tables::Project;
+use crate::tables::{DbPool, Project};
 
 #[derive(Deserialize)]
 pub struct ProjectPayload {

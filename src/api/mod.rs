@@ -1,6 +1,4 @@
 use std::sync::Arc;
-use diesel::r2d2::{ConnectionManager, Pool};
-use diesel::prelude::*;
 use warp::Filter;
 
 pub mod user;
@@ -19,8 +17,7 @@ impl warp::reject::Reject for DatabaseError {}
 pub struct NotFoundError {}
 impl warp::reject::Reject for NotFoundError {}
 
-pub type DbPool = Pool<ConnectionManager<PgConnection>>;
-
+use crate::tables::DbPool;
 pub fn with_db(pool: Arc<DbPool>) -> impl Filter<Extract = (Arc<DbPool>,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || pool.clone())
 }
