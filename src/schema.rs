@@ -7,6 +7,51 @@ diesel::table! {
 }
 
 diesel::table! {
+    flow_assignments (id) {
+        id -> Uuid,
+        flow_id -> Uuid,
+        node_id -> Uuid,
+    }
+}
+
+diesel::table! {
+    flow_entries (flow_id, node_id) {
+        flow_id -> Uuid,
+        node_id -> Uuid,
+    }
+}
+
+diesel::table! {
+    flow_exits (id) {
+        id -> Uuid,
+        flow_id -> Uuid,
+        node_id -> Uuid,
+    }
+}
+
+diesel::table! {
+    flow_node_connections (from_node_id, to_node_id) {
+        from_node_id -> Uuid,
+        to_node_id -> Uuid,
+    }
+}
+
+diesel::table! {
+    flow_nodes (id) {
+        id -> Uuid,
+        node_name -> Varchar,
+    }
+}
+
+diesel::table! {
+    flows (id) {
+        id -> Uuid,
+        flow_name -> Varchar,
+        description -> Text,
+    }
+}
+
+diesel::table! {
     projects (name) {
         name -> Varchar,
         description -> Varchar,
@@ -60,6 +105,12 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(flow_assignments -> flow_nodes (node_id));
+diesel::joinable!(flow_assignments -> flows (flow_id));
+diesel::joinable!(flow_entries -> flow_nodes (node_id));
+diesel::joinable!(flow_entries -> flows (flow_id));
+diesel::joinable!(flow_exits -> flow_nodes (node_id));
+diesel::joinable!(flow_exits -> flows (flow_id));
 diesel::joinable!(task_components -> components (component_name));
 diesel::joinable!(task_components -> tasks (task_id));
 diesel::joinable!(task_tags -> tags (tag_name));
@@ -70,6 +121,12 @@ diesel::joinable!(tasks -> projects (project));
 
 diesel::allow_tables_to_appear_in_same_query!(
     components,
+    flow_assignments,
+    flow_entries,
+    flow_exits,
+    flow_node_connections,
+    flow_nodes,
+    flows,
     projects,
     tags,
     task_components,

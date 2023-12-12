@@ -2,13 +2,15 @@ use diesel::prelude::*;
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
 
+mod flows;
 mod users;
 mod project;
 mod tasks;
 
-pub use self::users::User;
+pub use self::flows::Flow;
 pub use self::project::Project;
 pub use self::tasks::Task;
+pub use self::users::User;
 
 pub fn establish_connection(password: &str) -> PgConnection {
     let database_url = format!("postgres://postgres:{}@localhost/zini", password);
