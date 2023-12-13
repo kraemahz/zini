@@ -144,7 +144,7 @@ impl FlowEntry {
         where C: Connection<Backend = Pg>
     {
         let entry = FlowEntry{flow_id, node_id};
-        let result = diesel::insert_into(crate::schema::flow_entries::table)
+        diesel::insert_into(crate::schema::flow_entries::table)
             .values(&entry)
             .on_conflict(crate::schema::flow_entries::flow_id)
             .do_update()

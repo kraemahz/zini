@@ -1,9 +1,10 @@
 use diesel::prelude::*;
+use serde::Serialize;
 use chrono::NaiveDateTime;
 use tokio::sync::broadcast;
 
 
-#[derive(PartialEq, Queryable, Insertable, Clone, Debug)]
+#[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::users)]
 pub struct User {
     pub username: String,

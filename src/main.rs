@@ -1,10 +1,11 @@
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tracing_subscriber::{prelude::*, EnvFilter};
 use warp::Filter;
 
 use zini::router::Router;
 use zini::session::{InvalidSessionToken, NoSessionToken, SessionStore};
-use zini::tables::{establish_connection_pool, Project, User, Task};
+use zini::tables::{establish_connection_pool, Project, User, Task, Flow, Graph};
 use zini::api::*;
 
 async fn handle_rejection(err: warp::reject::Rejection) -> Result<impl warp::Reply, std::convert::Infallible> {
@@ -37,9 +38,29 @@ async fn handle_rejection(err: warp::reject::Rejection) -> Result<impl warp::Rep
     Ok(warp::reply::with_status(json, warp::http::StatusCode::INTERNAL_SERVER_ERROR))
 }
 
+fn setup_tracing() {
+    let tracing_layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_level(true)
+        .with_thread_ids(true)
+        .with_line_number(true)
+        .with_file(true);
+    let console_layer = console_subscriber::spawn();
+    let filter_layer = EnvFilter::new("zini=debug");
+
+    tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(console_layer)
+        .with(tracing_layer)
+        .init();
+
+    tracing::info!("Zini started");
+}
+
 #[tokio::main]
 async fn main() {
-    let password = "development";
+    setup_tracing();
+    let password = "development"; // TODO
     let database_url = format!("postgres://postgres:{}@localhost/zini", password);
 
     let pool = establish_connection_pool(&database_url);
@@ -52,11 +73,15 @@ async fn main() {
     let user_tx: broadcast::Sender<User> = router.announce();
     let task_tx: broadcast::Sender<Task> = router.announce();
     let project_tx: broadcast::Sender<Project> = router.announce();
+    let flow_tx: broadcast::Sender<Flow> = router.announce();
+    let graph_tx: broadcast::Sender<Graph> = router.announce();
 
     let routes = user::user_routes(store.clone(), pool.clone(), user_tx)
         .or(project::project_routes(store.clone(), pool.clone(), project_tx))
         .or(tasks::task_routes(store.clone(), pool.clone(), task_tx))
+        .or(flows::flow_routes(store.clone(), pool.clone(), flow_tx, graph_tx))
         .recover(handle_rejection);
 
+    zini::events::emit_events("ws://127.0.0.1:5050", router);
     warp::serve(routes).run(([127, 0, 0, 1], 8080)).await;
 }

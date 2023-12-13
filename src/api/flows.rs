@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use diesel::connection::{Connection, LoadConnection};
 use diesel::pg::Pg;
@@ -171,5 +170,6 @@ pub fn flow_routes(store: Arc<SessionStore>,
 
     warp::path("flow")
         .and(create_flow
+             .or(get_flow_graph)
              .or(update_flow_graph))
 }
