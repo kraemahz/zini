@@ -45,14 +45,24 @@ fn setup_tracing() {
         .with_thread_ids(true)
         .with_line_number(true)
         .with_file(true);
-    let console_layer = console_subscriber::spawn();
-    let filter_layer = EnvFilter::new("zini=debug");
 
-    tracing_subscriber::registry()
-        .with(filter_layer)
-        .with(console_layer)
-        .with(tracing_layer)
-        .init();
+    let filter_layer = EnvFilter::new("zini=debug");
+    #[cfg(debug_assertions)]
+    {
+        let console_layer = console_subscriber::spawn();
+        tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(console_layer)
+            .with(tracing_layer)
+            .init();
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(tracing_layer)
+            .init();
+    }
 
     tracing::info!("Zini started");
 }
