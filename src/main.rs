@@ -13,6 +13,11 @@ async fn handle_rejection(err: warp::reject::Rejection) -> Result<impl warp::Rep
         let response = warp::reply::with_status(json, warp::http::StatusCode::CONFLICT);
         return Ok(response);
     }
+    if let Some(_) = err.find::<ParseError>() {
+        let json = warp::reply::json(&"Invalid parameter, parsing failed");
+        let response = warp::reply::with_status(json, warp::http::StatusCode::BAD_REQUEST);
+        return Ok(response);
+    }
     if let Some(_) = err.find::<NotFoundError>() {
         let json = warp::reply::json(&"Not Found: Resource does not exist");
         let response = warp::reply::with_status(json, warp::http::StatusCode::NOT_FOUND);

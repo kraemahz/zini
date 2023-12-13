@@ -7,23 +7,21 @@ diesel::table! {
 }
 
 diesel::table! {
-    flow_assignments (id) {
-        id -> Uuid,
+    flow_assignments (flow_id, node_id) {
         flow_id -> Uuid,
         node_id -> Uuid,
     }
 }
 
 diesel::table! {
-    flow_entries (flow_id, node_id) {
+    flow_entries (flow_id) {
         flow_id -> Uuid,
         node_id -> Uuid,
     }
 }
 
 diesel::table! {
-    flow_exits (id) {
-        id -> Uuid,
+    flow_exits (flow_id, node_id) {
         flow_id -> Uuid,
         node_id -> Uuid,
     }

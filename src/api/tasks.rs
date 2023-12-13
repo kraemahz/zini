@@ -16,10 +16,10 @@ pub struct TaskPayload {
     description: Option<String>,
 }
 
-pub async fn create_task_handler(payload: TaskPayload,
-                                 auth: AuthenticatedUser,
-                                 db_pool: Arc<DbPool>,
-                                 mut sender: broadcast::Sender<Task>) -> Result<impl Reply, Rejection> {
+async fn create_task_handler(payload: TaskPayload,
+                             auth: AuthenticatedUser,
+                             db_pool: Arc<DbPool>,
+                             mut sender: broadcast::Sender<Task>) -> Result<impl Reply, Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
@@ -52,9 +52,9 @@ pub async fn create_task_handler(payload: TaskPayload,
     Ok(warp::reply::json(&"Task created"))
 }
 
-pub async fn get_task_handler(task_id: String,
-                              _auth: AuthenticatedUser,
-                              db_pool: Arc<DbPool>) -> Result<impl Reply, Rejection> {
+async fn get_task_handler(task_id: String,
+                          _auth: AuthenticatedUser,
+                          db_pool: Arc<DbPool>) -> Result<impl Reply, Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
@@ -81,9 +81,9 @@ pub struct QueryReply {
     tasks: Vec<Task>
 }
 
-pub async fn filter_tasks_handler(payload: QueryPayload,
-                                  _auth: AuthenticatedUser,
-                                  db_pool: Arc<DbPool>) -> Result<impl Reply, Rejection> {
+async fn filter_tasks_handler(payload: QueryPayload,
+                              _auth: AuthenticatedUser,
+                              db_pool: Arc<DbPool>) -> Result<impl Reply, Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),

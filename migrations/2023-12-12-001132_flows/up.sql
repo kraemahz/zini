@@ -15,23 +15,22 @@ CREATE TABLE flow_nodes (
 
 -- Create Flow Assignments for Flow Nodes
 CREATE TABLE flow_assignments (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    flow_id UUID NOT NULL REFERENCES flows(id),
-    node_id UUID NOT NULL REFERENCES flow_nodes(id)
-);
-
--- Create Entry for Flow
-CREATE TABLE flow_entries (
     flow_id UUID NOT NULL REFERENCES flows(id),
     node_id UUID NOT NULL REFERENCES flow_nodes(id),
     PRIMARY KEY (flow_id, node_id)
 );
 
+-- Create Entry for Flow
+CREATE TABLE flow_entries (
+    flow_id UUID PRIMARY KEY REFERENCES flows(id),
+    node_id UUID NOT NULL REFERENCES flow_nodes(id)
+);
+
 -- Create Exits for Flow
 CREATE TABLE flow_exits (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     flow_id UUID NOT NULL REFERENCES flows(id),
-    node_id UUID NOT NULL REFERENCES flow_nodes(id)
+    node_id UUID NOT NULL REFERENCES flow_nodes(id),
+    PRIMARY KEY (flow_id, node_id)
 );
 
 -- Create Relationship Table for Flow Nodes (Many-to-Many)

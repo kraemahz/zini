@@ -7,7 +7,7 @@ mod users;
 mod project;
 mod tasks;
 
-pub use self::flows::Flow;
+pub use self::flows::{Flow, FlowAssignment, FlowNode, FlowConnection, FlowEntry, FlowExit, Graph};
 pub use self::project::Project;
 pub use self::tasks::Task;
 pub use self::users::User;
