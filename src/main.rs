@@ -46,10 +46,10 @@ fn setup_tracing() {
         .with_line_number(true)
         .with_file(true);
 
-    let filter_layer = EnvFilter::new("zini=debug");
     #[cfg(debug_assertions)]
     {
         let console_layer = console_subscriber::spawn();
+        let filter_layer = EnvFilter::new("zini=debug");
         tracing_subscriber::registry()
             .with(filter_layer)
             .with(console_layer)
@@ -58,6 +58,7 @@ fn setup_tracing() {
     }
     #[cfg(not(debug_assertions))]
     {
+        let filter_layer = EnvFilter::new("zini=info");
         tracing_subscriber::registry()
             .with(filter_layer)
             .with(tracing_layer)
