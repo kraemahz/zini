@@ -8,7 +8,7 @@ use super::project::Project;
 use super::users::User;
 
 
-#[derive(Queryable, Insertable, Clone, Debug, Serialize)]
+#[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::tasks)]
 pub struct Task {
     pub id: String,
@@ -28,7 +28,7 @@ impl Task {
                   author: &User) -> QueryResult<Self> {
 
         project.n_tasks += 1;
-        let next_id = format!("{}-{}", project.name, project.n_tasks);
+        let next_id = format!("{}-{}", project.name.to_uppercase(), project.n_tasks);
 
         let task = Self {
             id: next_id,
@@ -151,4 +151,33 @@ struct TaskComponent {
 struct TaskWatcher {
     pub task_id: String,
     pub watcher_username: String,
+}
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::tables::harness::{to_pg_db_name, DbHarness};
+    use function_name::named;
+
+    #[test]
+    #[named]
+    fn test_task_handle() {
+        let db_name = to_pg_db_name(function_name!());
+        let harness = DbHarness::new("localhost", "development", &db_name);
+        let mut conn = harness.conn(); 
+        let (mut tx, _) = broadcast::channel(1);
+        let (mut user_tx, _) = broadcast::channel(1);
+        let (mut proj_tx, _) = broadcast::channel(1);
+
+        let user = User::create(&mut conn, &mut user_tx, "test_user", "test@example.com").expect("user");
+        let mut proj = Project::create(&mut conn, &mut proj_tx, "proj", "").expect("proj");
+        let task = Task::create(&mut conn, &mut tx, &mut proj, "Task 1", "Do this", &user).expect("task");
+
+        let task2 = Task::get(&mut conn, &task.id).expect("task2");
+
+        assert_eq!(task.id, "PROJ-1");
+        assert_eq!(task, task2);
+        assert_eq!(proj.n_tasks, 1);
+    }
 }

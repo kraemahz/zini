@@ -4,7 +4,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 
-#[derive(Queryable, Insertable, Clone, Debug, Serialize)]
+#[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::flows)]
 pub struct Flow {
     id: Uuid,
@@ -237,5 +237,27 @@ impl Graph {
             nodes,
             connections,
         })
+    }
+}
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::tables::harness::{to_pg_db_name, DbHarness};
+    use function_name::named;
+
+    #[test]
+    #[named]
+    fn test_flow_handle() {
+        let db_name = to_pg_db_name(function_name!());
+        let harness = DbHarness::new("localhost", "development", &db_name);
+        let mut conn = harness.conn(); 
+        let (mut tx, _) = broadcast::channel(1);
+
+        let flow = Flow::create(&mut conn, &mut tx, "flow".to_string(), "".to_string()).expect("flow");
+        let flow2 = Flow::get(&mut conn, flow.id).expect("task2");
+
+        assert_eq!(flow, flow2);
     }
 }
