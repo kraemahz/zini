@@ -87,11 +87,20 @@ async fn main() {
     let flow_tx: broadcast::Sender<Flow> = router.announce();
     let graph_tx: broadcast::Sender<Graph> = router.announce();
 
+    let log_requests = warp::log::custom(|info| {
+        tracing::info!(target: "requests",
+                       method = %info.method(),
+                       path = %info.path(),
+                       status = info.status().as_u16(),
+                       duration = ?info.elapsed());
+    });
+
     let routes = user::user_routes(store.clone(), pool.clone(), user_tx)
         .or(project::project_routes(store.clone(), pool.clone(), project_tx))
         .or(tasks::task_routes(store.clone(), pool.clone(), task_tx))
         .or(flows::flow_routes(store.clone(), pool.clone(), flow_tx, graph_tx))
-        .recover(handle_rejection);
+        .recover(handle_rejection)
+        .with(log_requests);
 
     zini::events::emit_events("ws://127.0.0.1:5050", router);
     warp::serve(routes).run(([127, 0, 0, 1], 8080)).await;
