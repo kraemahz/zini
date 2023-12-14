@@ -16,13 +16,24 @@ pub fn emit_events(addr: &str, mut router: Router) {
 
     spawn(async move {
         let mut client = prism_client::Client::connect(uri).await.expect("Prism connection failed");
+        let user_beam = "zini::user";
+        let task_beam = "zini::task";
+        let project_beam = "zini::project";
+        let flow_beam = "zini::flow";
+        let graph_beam = "zini::graph";
+
+        client.add_beam(user_beam).await.expect("Failed setting up client");
+        client.add_beam(task_beam).await.expect("Failed setting up client");
+        client.add_beam(project_beam).await.expect("Failed setting up client");
+        client.add_beam(flow_beam).await.expect("Failed setting up client");
+        client.add_beam(graph_beam).await.expect("Failed setting up client");
 
         loop {
             tokio::select!(
                 msg = user_rx.recv() => {
                     if let Ok(msg) = msg {
                         let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit("zini::user", vec).await.is_err() {
+                        if client.emit(user_beam, vec).await.is_err() {
                             break;
                         }
                     }
@@ -30,7 +41,7 @@ pub fn emit_events(addr: &str, mut router: Router) {
                 msg = task_rx.recv() => {
                     if let Ok(msg) = msg {
                         let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit("zini::task", vec).await.is_err() {
+                        if client.emit(task_beam, vec).await.is_err() {
                             break;
                         }
                     }
@@ -38,7 +49,7 @@ pub fn emit_events(addr: &str, mut router: Router) {
                 msg = project_rx.recv() => {
                     if let Ok(msg) = msg {
                         let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit("zini::project", vec).await.is_err() {
+                        if client.emit(project_beam, vec).await.is_err() {
                             break;
                         }
                     }
@@ -46,7 +57,7 @@ pub fn emit_events(addr: &str, mut router: Router) {
                 msg = flow_rx.recv() => {
                     if let Ok(msg) = msg {
                         let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit("zini::flow", vec).await.is_err() {
+                        if client.emit(flow_beam, vec).await.is_err() {
                             break;
                         }
                     }
@@ -54,7 +65,7 @@ pub fn emit_events(addr: &str, mut router: Router) {
                 msg = graph_rx.recv() => {
                     if let Ok(msg) = msg {
                         let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit("zini::graph", vec).await.is_err() {
+                        if client.emit(graph_beam, vec).await.is_err() {
                             break;
                         }
                     }
