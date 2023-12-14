@@ -2,47 +2,28 @@ use diesel::prelude::*;
 use serde::Serialize;
 use chrono::NaiveDateTime;
 use tokio::sync::broadcast;
+use uuid::Uuid;
 
+use super::ValidationErrorMessage;
+use crate::auth::{generate_salt, salt_and_hash};
+
+
+#[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
+#[diesel(table_name = crate::schema::user_id_accounts)]
+pub struct UserIdAccount {
+    pub user_id: Uuid,
+    pub username: String,
+}
 
 #[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::users)]
 pub struct User {
-    pub username: String,
-    pub created: NaiveDateTime,
+    pub id: Uuid,
     pub email: String,
+    pub created: NaiveDateTime,
+    pub salt: Option<Vec<u8>>,
+    pub hash: Option<Vec<u8>>,
 }
-
-
-struct ValidationErrorMessage {
-    message: String,
-    column: String,
-    constraint_name: String
-}
-
-impl diesel::result::DatabaseErrorInformation for ValidationErrorMessage {
-    fn message(&self) -> &str {
-        &self.message
-    }
-    fn details(&self) -> Option<&str> {
-        None
-    }
-    fn hint(&self) -> Option<&str> {
-        None
-    }
-    fn table_name(&self) -> Option<&str> {
-        None
-    }
-    fn column_name(&self) -> Option<&str> {
-        Some(&self.column)
-    }
-    fn constraint_name(&self) -> Option<&str> {
-        Some(&self.constraint_name)
-    }
-    fn statement_position(&self) -> Option<i32> {
-        None
-    }
-}
-
 
 impl User {
     fn is_valid_username(username: &str) -> bool {
@@ -55,32 +36,66 @@ impl User {
 
     pub fn create(conn: &mut PgConnection,
                   sender: &mut broadcast::Sender<Self>,
-                  username: &str,
-                  email: &str) -> QueryResult<Self> {
-        if !Self::is_valid_username(username) {
-            let kind = diesel::result::DatabaseErrorKind::CheckViolation;
-            let msg = Box::new(ValidationErrorMessage{message: "Invalid username".to_string(),
-                                                      column: "username".to_string(),
-                                                      constraint_name: "username_limits".to_string()});
-            return Err(diesel::result::Error::DatabaseError(kind, msg));
+                  email: &str,
+                  username: Option<&str>,
+                  password: Option<&str>) -> QueryResult<Self> {
+
+        if let Some(username) = username {
+            if !Self::is_valid_username(username) {
+                let kind = diesel::result::DatabaseErrorKind::CheckViolation;
+                let msg = Box::new(ValidationErrorMessage{message: "Invalid username".to_string(),
+                                                          column: "username".to_string(),
+                                                          constraint_name: "username_limits".to_string()});
+                return Err(diesel::result::Error::DatabaseError(kind, msg));
+            }
         }
 
-        let new_user = User {
-            username: username.to_owned(),
-            created: chrono::Utc::now().naive_utc(),
+        let (salt, hash) = if let Some(password) = password {
+            let salt = generate_salt();
+            let hash = salt_and_hash(password, &salt);
+            let hash = match hash {
+                Ok(hash) => hash.as_bytes().to_vec(),
+                Err(_) => {
+                    let kind = diesel::result::DatabaseErrorKind::CheckViolation;
+                    let msg = Box::new(ValidationErrorMessage{message: "Invalid password hash".to_string(),
+                                                              column: "hash".to_string(),
+                                                              constraint_name: "hashing_algorithm".to_string()});
+                    return Err(diesel::result::Error::DatabaseError(kind, msg));
+                }
+            };
+            (Some(salt), Some(hash))
+        } else {
+            (None, None)
+        };
+
+        let user = User {
+            id: Uuid::new_v4(),
             email: email.to_owned(),
+            created: chrono::Utc::now().naive_utc(),
+            salt,
+            hash,
         };
 
         diesel::insert_into(crate::schema::users::table)
-            .values(&new_user)
+            .values(&user)
             .execute(conn)?;
-        sender.send(new_user.clone()).ok();
-        Ok(new_user)
+        if let Some(username) = username {
+            let user_id_account = UserIdAccount {
+                user_id: user.id,
+                username: username.to_ascii_lowercase()
+            };
+            diesel::insert_into(crate::schema::user_id_accounts::table)
+                .values(&user_id_account)
+                .execute(conn)?;
+        }
+
+        sender.send(user.clone()).ok();
+        Ok(user)
     }
 
-    pub fn get(conn: &mut PgConnection, username: &str) -> Option<Self> {
+    pub fn get(conn: &mut PgConnection, id: Uuid) -> Option<Self> {
         use crate::schema::users::dsl;
-        let user = dsl::users.find(username)
+        let user = dsl::users.find(id)
             .get_result::<User>(conn)
             .optional()
             .ok()??;
@@ -102,11 +117,11 @@ mod test {
         let harness = DbHarness::new("localhost", "development", &db_name);
         let mut conn = harness.conn(); 
         let (mut tx, _) = broadcast::channel(1);
-        let user = User::create(&mut conn, &mut tx, "test_user", "test@example.com").expect("user");
-        let user2 = User::get(&mut conn, "test_user").expect("user2");
+        let user = User::create(&mut conn, &mut tx, "test@example.com", Some("test_user"), Some("password")).expect("user");
+        let user2 = User::get(&mut conn, user.id).expect("user2");
         assert_eq!(user, user2);
 
-        assert!(User::create(&mut conn, &mut tx, "2bad_user", "bad_user@example.com").is_err());
-        assert!(User::create(&mut conn, &mut tx, "bad_user", "bad_email").is_err());
+        assert!(User::create(&mut conn, &mut tx, "bad_user@example.com", Some("2bad_user"), None).is_err());
+        assert!(User::create(&mut conn, &mut tx, "bad_email", Some("bad_user"), None).is_err());
     }
 }

@@ -1,22 +1,33 @@
 use std::collections::HashMap;
 
+use chrono::NaiveDateTime;
 use diesel::prelude::*;
 use serde::Serialize;
 use tokio::sync::broadcast;
+use uuid::Uuid;
 
 use super::project::Project;
 use super::users::User;
 
 
 #[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
+#[diesel(table_name = crate::schema::task_projects)]
+pub struct TaskProject {
+    pub task_id: Uuid,
+    pub project_id: Uuid
+}
+
+
+#[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::tasks)]
 pub struct Task {
-    pub id: String,
+    pub id: Uuid,
+    pub slug: String,
+    pub created: NaiveDateTime,
     pub title: String,
     pub description: String,
-    pub author: String,
-    pub assignee: Option<String>,
-    pub project: Option<String>,
+    pub author_id: Uuid,
+    pub assignee_id: Option<Uuid>,
 }
 
 impl Task {
@@ -28,21 +39,31 @@ impl Task {
                   author: &User) -> QueryResult<Self> {
 
         project.n_tasks += 1;
-        let next_id = format!("{}-{}", project.name.to_uppercase(), project.n_tasks);
+        let slug = format!("{}-{}", project.name, project.n_tasks);
 
         let task = Self {
-            id: next_id,
+            id: Uuid::new_v4(),
+            slug,
+            created: chrono::Utc::now().naive_utc(),
             title: title.to_owned(),
             description: description.to_owned(),
-            author: author.username.clone(),
-            assignee: None,
-            project: Some(project.name.clone()),
+            author_id: author.id.clone(),
+            assignee_id: None,
         };
+
+        let task_project = TaskProject {
+            task_id: task.id,
+            project_id: project.id
+        };
+
         conn.transaction(|transact| {
             diesel::insert_into(crate::schema::tasks::table)
                 .values(&task)
                 .execute(transact)?;
-            diesel::update(crate::schema::projects::table.find(&project.name))
+            diesel::insert_into(crate::schema::task_projects::table)
+                .values(&task_project)
+                .execute(transact)?;
+            diesel::update(crate::schema::projects::table.find(&project.id))
                 .set(crate::schema::projects::n_tasks.eq(project.n_tasks))
                 .execute(transact)?;
             QueryResult::Ok(())
@@ -52,7 +73,7 @@ impl Task {
         Ok(task)
     }
 
-    pub fn get(conn: &mut PgConnection, task_id: &str) -> Option<Self> {
+    pub fn get(conn: &mut PgConnection, task_id: Uuid) -> Option<Self> {
         use crate::schema::tasks::dsl;
         let task = dsl::tasks.find(task_id)
             .get_result::<Task>(conn)
@@ -100,12 +121,25 @@ impl Task {
         let mut query = tasks.into_boxed();
         for (key, value) in query_dict {
             match key.as_str() {
-                "id" => query = query.filter(id.eq(value)),
+                "slug" => query = query.filter(slug.ilike(format!("%{}%", value))),
                 "title" => query = query.filter(title.ilike(format!("%{}%", value))),
                 "description" => query = query.filter(description.ilike(format!("%{}%", value))),
-                "author" => query = query.filter(author.eq(value)),
-                "assignee" => query = query.filter(assignee.eq(value)),
-                "project" => query = query.filter(project.eq(value)),
+                "author" => {
+                    if let Ok(value) = Uuid::try_parse(value) {
+                        query = query.filter(author_id.eq(value))
+                    } else {
+                        tracing::debug!("Invalid uuid");
+                        continue;
+                    }
+                }
+                "assignee" => {
+                    if let Ok(value) = Uuid::try_parse(value) {
+                        query = query.filter(assignee_id.eq(value))
+                    } else {
+                        tracing::debug!("Invalid uuid");
+                        continue;
+                    }
+                }
                 _ => {} // Ignore unknown keys or log them if necessary
             }
         }
@@ -135,22 +169,22 @@ struct Component {
 #[derive(Queryable, Insertable)]
 #[diesel(table_name = crate::schema::task_tags)]
 struct TaskTag {
-    pub task_id: String,
+    pub task_id: Uuid,
     pub tag_name: String,
 }
 
 #[derive(Queryable, Insertable)]
 #[diesel(table_name = crate::schema::task_components)]
 struct TaskComponent {
-    pub task_id: String,
+    pub task_id: Uuid,
     pub component_name: String,
 }
 
 #[derive(Queryable, Insertable)]
 #[diesel(table_name = crate::schema::task_watchers)]
 struct TaskWatcher {
-    pub task_id: String,
-    pub watcher_username: String,
+    pub task_id: Uuid,
+    pub watcher_id: Uuid,
 }
 
 
@@ -170,13 +204,13 @@ mod test {
         let (mut user_tx, _) = broadcast::channel(1);
         let (mut proj_tx, _) = broadcast::channel(1);
 
-        let user = User::create(&mut conn, &mut user_tx, "test_user", "test@example.com").expect("user");
-        let mut proj = Project::create(&mut conn, &mut proj_tx, "proj", "").expect("proj");
+        let user = User::create(&mut conn, &mut user_tx, "test@example.com", Some("test_user"), Some("password")).expect("user");
+        let mut proj = Project::create(&mut conn, &mut proj_tx, &user, "proj", "").expect("proj");
         let task = Task::create(&mut conn, &mut tx, &mut proj, "Task 1", "Do this", &user).expect("task");
 
-        let task2 = Task::get(&mut conn, &task.id).expect("task2");
+        let task2 = Task::get(&mut conn, task.id).expect("task2");
 
-        assert_eq!(task.id, "PROJ-1");
+        assert_eq!(task.slug, "PROJ-1");
         assert_eq!(task, task2);
         assert_eq!(proj.n_tasks, 1);
     }

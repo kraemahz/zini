@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
+use uuid::Uuid;
 use warp::{Filter, Reply, Rejection};
 
 use super::*;
@@ -11,7 +12,7 @@ use crate::session::{AuthenticatedUser, SessionStore, authenticate};
 
 #[derive(Deserialize)]
 pub struct TaskPayload {
-    project: String,
+    project_id: Uuid,
     title: String, 
     description: Option<String>,
 }
@@ -25,14 +26,14 @@ async fn create_task_handler(payload: TaskPayload,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
     };
 
-    let TaskPayload{project, title, description} = payload;
+    let TaskPayload{project_id, title, description} = payload;
 
-    let mut project = match Project::get(&mut conn, &project) {
+    let mut project = match Project::get(&mut conn, project_id) {
         Some(project) => project,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
 
-    let user = match User::get(&mut conn, &auth.username) {
+    let user = match User::get(&mut conn, auth.0) {
         Some(user) => user,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
@@ -59,7 +60,13 @@ async fn get_task_handler(task_id: String,
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
     };
-    let task = match Task::get(&mut conn, &task_id) {
+    let task_id = match Uuid::parse_str(&task_id) {
+        Ok(task_id) => task_id,
+        Err(_) => {
+            return Err(warp::reject::custom(ParseError{}));
+        }
+    };
+    let task = match Task::get(&mut conn, task_id) {
         Some(task) => task,
         None => {
             return Err(warp::reject::custom(NotFoundError{}));

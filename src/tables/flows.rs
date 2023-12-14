@@ -1,13 +1,18 @@
+use chrono::NaiveDateTime;
 use diesel::{prelude::*, pg::Pg, connection::LoadConnection};
 use serde::Serialize;
 use tokio::sync::broadcast;
 use uuid::Uuid;
+
+use super::User;
 
 
 #[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::flows)]
 pub struct Flow {
     id: Uuid,
+    owner_id: Uuid,
+    created: NaiveDateTime,
     flow_name: String,
     description: String
 }
@@ -15,12 +20,17 @@ pub struct Flow {
 impl Flow {
     pub fn create<C>(conn: &mut C,
                      sender: &mut broadcast::Sender<Self>,
+                     author: &User,
                      flow_name: String,
                      description: String) -> QueryResult<Self>
         where C: Connection<Backend = Pg>
     {
-        let id = Uuid::new_v4();
-        let flow = Self { id, flow_name, description };
+        let flow = Self {
+            id: Uuid::new_v4(),
+            owner_id: author.id,
+            created: chrono::Utc::now().naive_utc(),
+            flow_name: flow_name.to_ascii_uppercase(),
+            description };
         diesel::insert_into(crate::schema::flows::table)
             .values(&flow)
             .execute(conn)?;
@@ -254,10 +264,13 @@ mod test {
         let harness = DbHarness::new("localhost", "development", &db_name);
         let mut conn = harness.conn(); 
         let (mut tx, _) = broadcast::channel(1);
+        let (mut user_tx, _) = broadcast::channel(1);
 
-        let flow = Flow::create(&mut conn, &mut tx, "flow".to_string(), "".to_string()).expect("flow");
+        let user = User::create(&mut conn, &mut user_tx, "test@example.com", None, None).expect("user");
+        let flow = Flow::create(&mut conn, &mut tx, &user, "flow".to_string(), "".to_string()).expect("flow");
         let flow2 = Flow::get(&mut conn, flow.id).expect("task2");
 
         assert_eq!(flow, flow2);
+        assert_eq!(flow.flow_name, "FLOW"); // Forced uppercase
     }
 }

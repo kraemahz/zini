@@ -10,8 +10,9 @@ use crate::tables::{DbPool, User};
 
 #[derive(Deserialize)]
 pub struct UserPayload {
-    username: String, 
+    username: Option<String>, 
     email: String,
+    password: String,
 }
 
 pub async fn create_user_handler(payload: UserPayload,
@@ -21,8 +22,9 @@ pub async fn create_user_handler(payload: UserPayload,
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
     };
-    let UserPayload{username, email} = payload;
-    match User::create(&mut conn, &mut sender, &username, &email) {
+    let UserPayload{username, email, password} = payload;
+    let opt_username = match &username { Some(s) => Some(s.as_str()), None => None };
+    match User::create(&mut conn, &mut sender, &email, opt_username, Some(&password)) {
         Ok(user) => user,
         Err(_) => return Err(warp::reject::custom(ConflictError{})),
     };

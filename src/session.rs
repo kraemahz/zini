@@ -3,6 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 use warp::{Filter, Rejection, Reply};
+use uuid::Uuid;
+
+use crate::auth::{generate_random_token, to_base64};
 
 pub struct SessionStore {
     sessions: Mutex<HashMap<String, AuthenticatedUser>>,
@@ -27,9 +30,7 @@ impl SessionStore {
 }
 
 #[derive(Clone, Debug)]
-pub struct AuthenticatedUser {
-    pub username: String,
-}
+pub struct AuthenticatedUser (pub Uuid);
 
 #[derive(Debug)]
 pub struct InvalidCredentials;
@@ -44,21 +45,21 @@ pub struct NoSessionToken;
 impl warp::reject::Reject for NoSessionToken {}
 
 #[derive(Deserialize)]
-pub struct LoginInfo {
+pub enum LoginInfo {
+    Basic{username: String, password: String},
+    Email{email: String, password: String},
 }
-
 
 pub async fn login_handler(
     login_info: LoginInfo,
     session_store: Arc<SessionStore>
 ) -> Result<impl Reply, Rejection> {
     // Authenticate the user
-    if let Some(user) = authenticate_user(&login_info).await {
+    if let Some(user_id) = authenticate_user(&login_info).await {
         // Generate a session token
-        let token = generate_session_token();
-
-        // Store the session token
-        session_store.store_session(&token, AuthenticatedUser{username: user});
+        let bytes = generate_random_token(256);
+        let token = to_base64(&bytes);
+        session_store.store_session(&token, AuthenticatedUser(user_id));
 
         // Create a response and set the session token as a cookie
         let json = warp::reply::json(&"user");
@@ -73,14 +74,9 @@ pub async fn login_handler(
     }
 }
 
-pub fn generate_session_token() -> String {
+pub async fn authenticate_user(login_info: &LoginInfo) -> Option<Uuid> {
     // TODO
-    "A very secure token".to_string()
-}
-
-pub async fn authenticate_user(login_info: &LoginInfo) -> Option<String> {
-    // TODO
-    Some("default".to_string())
+    Some(Uuid::default())
 }
 
 pub fn authenticate(session_store: Arc<SessionStore>) -> 

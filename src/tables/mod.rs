@@ -24,6 +24,39 @@ pub fn establish_connection_pool(database_url: &str) -> DbPool {
         .expect("Failed to create pool.")
 }
 
+pub struct ValidationErrorMessage {
+    pub message: String,
+    pub column: String,
+    pub constraint_name: String
+}
+
+impl diesel::result::DatabaseErrorInformation for ValidationErrorMessage {
+    fn message(&self) -> &str {
+        &self.message
+    }
+    fn details(&self) -> Option<&str> {
+        None
+    }
+    fn hint(&self) -> Option<&str> {
+        None
+    }
+    fn table_name(&self) -> Option<&str> {
+        None
+    }
+    fn column_name(&self) -> Option<&str> {
+        Some(&self.column)
+    }
+    fn constraint_name(&self) -> Option<&str> {
+        Some(&self.constraint_name)
+    }
+    fn statement_position(&self) -> Option<i32> {
+        None
+    }
+}
+
+
+
+
 #[cfg(test)]
 pub(self) mod harness {
     use super::*;

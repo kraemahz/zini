@@ -37,7 +37,7 @@ pub struct UpdateFlowPayload {
 // Handler for creating a new flow
 async fn create_flow_handler(
     payload: NewFlowPayload,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
     db_pool: Arc<DbPool>,
     mut sender: broadcast::Sender<Flow>
 ) -> Result<impl Reply, Rejection> {
@@ -47,9 +47,15 @@ async fn create_flow_handler(
     };
 
     let NewFlowPayload{flow_name, description} = payload;
+    let user = match User::get(&mut conn, auth.0) {
+        Some(user) => user,
+        None => return Err(warp::reject::custom(NotFoundError{})),
+    };
+
     let flow = match Flow::create(
         &mut conn,
         &mut sender,
+        &user,
         flow_name,
         description.unwrap_or_else(String::new)
     ) {
