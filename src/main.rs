@@ -4,9 +4,9 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 use warp::Filter;
 
 use zini::router::Router;
-use zini::session::{InvalidSessionToken, NoSessionToken, SessionStore};
 use zini::tables::{establish_connection_pool, Project, User, Task, Flow, Graph};
 use zini::api::*;
+
 
 async fn handle_rejection(err: warp::reject::Rejection) -> Result<impl warp::Reply, std::convert::Infallible> {
     if let Some(_) = err.find::<ConflictError>() {
@@ -95,10 +95,11 @@ async fn main() {
                        duration = ?info.elapsed());
     });
 
-    let routes = user::user_routes(store.clone(), pool.clone(), user_tx)
-        .or(project::project_routes(store.clone(), pool.clone(), project_tx))
-        .or(tasks::task_routes(store.clone(), pool.clone(), task_tx))
-        .or(flows::flow_routes(store.clone(), pool.clone(), flow_tx, graph_tx))
+    let routes = users::routes(store.clone(), pool.clone(), user_tx)
+        .or(projects::routes(store.clone(), pool.clone(), project_tx))
+        .or(tasks::routes(store.clone(), pool.clone(), task_tx))
+        .or(flows::routes(store.clone(), pool.clone(), flow_tx, graph_tx))
+        .or(sessions::routes(store.clone(), pool.clone()))
         .recover(handle_rejection)
         .with(log_requests);
 

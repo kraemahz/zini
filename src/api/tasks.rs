@@ -8,7 +8,6 @@ use warp::{Filter, Reply, Rejection};
 use super::*;
 use crate::router::with_broadcast;
 use crate::tables::{DbPool, Project, User, Task};
-use crate::session::{AuthenticatedUser, SessionStore, authenticate};
 
 #[derive(Deserialize)]
 pub struct TaskPayload {
@@ -33,7 +32,7 @@ async fn create_task_handler(payload: TaskPayload,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
 
-    let user = match User::get(&mut conn, auth.0) {
+    let user = match User::get(&mut conn, auth.id()) {
         Some(user) => user,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
@@ -102,9 +101,9 @@ async fn filter_tasks_handler(payload: QueryPayload,
 }
 
 
-pub fn task_routes(store: Arc<SessionStore>,
-                   pool: Arc<DbPool>,
-                   task_tx: broadcast::Sender<Task>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+pub fn routes(store: Arc<SessionStore>,
+              pool: Arc<DbPool>,
+              task_tx: broadcast::Sender<Task>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     let create_task = warp::post()
         .and(warp::body::json())
         .and(authenticate(store.clone()))

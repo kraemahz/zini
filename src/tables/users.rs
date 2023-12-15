@@ -93,6 +93,28 @@ impl User {
         Ok(user)
     }
 
+    pub fn from_username(conn: &mut PgConnection, username: &str) -> Option<Self> {
+        use crate::schema::users;
+        use crate::schema::user_id_accounts;
+        let (_account, user): (UserIdAccount, User) = user_id_accounts::table
+            .inner_join(users::table.on(users::id.eq(user_id_accounts::user_id)))
+            .filter(user_id_accounts::username.eq(username))
+            .first(conn)
+            .optional()
+            .ok()??;
+        Some(user)
+    }
+
+    pub fn from_email(conn: &mut PgConnection, email: &str) -> Option<Self> {
+        use crate::schema::users;
+        let user = users::table
+            .filter(users::email.eq(email))
+            .first(conn)
+            .optional()
+            .ok()??;
+        Some(user)
+    }
+
     pub fn get(conn: &mut PgConnection, id: Uuid) -> Option<Self> {
         use crate::schema::users::dsl;
         let user = dsl::users.find(id)

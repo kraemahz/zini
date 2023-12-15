@@ -6,7 +6,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use super::project::Project;
+use super::projects::Project;
 use super::users::User;
 
 

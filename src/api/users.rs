@@ -5,7 +5,6 @@ use warp::{Filter, Reply, Rejection};
 
 use super::*;
 use crate::router::with_broadcast;
-use crate::session::SessionStore;
 use crate::tables::{DbPool, User};
 
 #[derive(Deserialize)]
@@ -31,9 +30,9 @@ pub async fn create_user_handler(payload: UserPayload,
     Ok(warp::reply::json(&"User created"))
 }
 
-pub fn user_routes(_store: Arc<SessionStore>,
-                   pool: Arc<DbPool>,
-                   user_tx: broadcast::Sender<User>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+pub fn routes(_store: Arc<SessionStore>,
+              pool: Arc<DbPool>,
+              user_tx: broadcast::Sender<User>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     let create_user = warp::post()
         .and(warp::body::json())
         .and(with_db(pool.clone()))

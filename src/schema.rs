@@ -63,6 +63,13 @@ diesel::table! {
 }
 
 diesel::table! {
+    sessions (user_id) {
+        user_id -> Uuid,
+        token -> Nullable<Bytea>,
+    }
+}
+
+diesel::table! {
     tags (name) {
         name -> Varchar,
     }
@@ -133,6 +140,7 @@ diesel::joinable!(flow_exits -> flow_nodes (node_id));
 diesel::joinable!(flow_exits -> flows (flow_id));
 diesel::joinable!(flows -> users (owner_id));
 diesel::joinable!(projects -> users (owner_id));
+diesel::joinable!(sessions -> users (user_id));
 diesel::joinable!(task_components -> components (component_name));
 diesel::joinable!(task_components -> tasks (task_id));
 diesel::joinable!(task_projects -> projects (project_id));
@@ -152,6 +160,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     flow_nodes,
     flows,
     projects,
+    sessions,
     tags,
     task_components,
     task_projects,

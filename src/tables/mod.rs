@@ -3,12 +3,14 @@ use diesel::r2d2::{ConnectionManager, Pool};
 
 mod flows;
 mod users;
-mod project;
+mod projects;
+mod sessions;
 mod tasks;
 
 pub use self::flows::{Flow, FlowAssignment, FlowNode, FlowConnection, FlowEntry, FlowExit, Graph};
-pub use self::project::Project;
+pub use self::projects::Project;
 pub use self::tasks::Task;
+pub use self::sessions::Session;
 pub use self::users::User;
 
 pub fn db_url(host: &str, password: &str, database: &str) -> String {

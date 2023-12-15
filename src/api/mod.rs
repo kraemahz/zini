@@ -2,9 +2,18 @@ use std::sync::Arc;
 use warp::Filter;
 
 pub mod flows;
-pub mod user;
-pub mod project;
+pub mod users;
+pub mod projects;
+pub mod sessions;
 pub mod tasks;
+
+pub use self::sessions::{
+    InvalidSessionToken,
+    NoSessionToken,
+    SessionStore,
+    AuthenticatedUser,
+    authenticate
+};
 
 #[derive(Debug)]
 pub struct ConflictError {}

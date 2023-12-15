@@ -10,7 +10,7 @@ use warp::{Filter, Reply, Rejection};
 use super::*;
 use crate::router::with_broadcast;
 use crate::tables::*;
-use crate::session::{AuthenticatedUser, SessionStore, authenticate};
+use super::sessions::{AuthenticatedUser, SessionStore, authenticate};
 
 
 #[derive(Deserialize, Debug, Clone, Serialize)]
@@ -47,7 +47,7 @@ async fn create_flow_handler(
     };
 
     let NewFlowPayload{flow_name, description} = payload;
-    let user = match User::get(&mut conn, auth.0) {
+    let user = match User::get(&mut conn, auth.id()) {
         Some(user) => user,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
@@ -149,10 +149,10 @@ async fn update_flow_graph_handler(
 }
 
 // Add the route for creating a flow to your routes function
-pub fn flow_routes(store: Arc<SessionStore>,
-                   pool: Arc<DbPool>,
-                   flow_tx: broadcast::Sender<Flow>,
-                   graph_tx: broadcast::Sender<Graph>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+pub fn routes(store: Arc<SessionStore>,
+              pool: Arc<DbPool>,
+              flow_tx: broadcast::Sender<Flow>,
+              graph_tx: broadcast::Sender<Graph>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     let create_flow = warp::post()
         .and(warp::body::json())
         .and(authenticate(store.clone()))

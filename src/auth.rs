@@ -4,7 +4,7 @@ use scrypt::{
     password_hash::{
         errors::Result as HashResult,
         rand_core::OsRng,
-        PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
+        PasswordHasher, SaltString,
     },
     Scrypt
 };

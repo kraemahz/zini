@@ -6,7 +6,6 @@ use uuid::Uuid;
 
 use super::*;
 use crate::router::with_broadcast;
-use crate::session::{AuthenticatedUser, SessionStore, authenticate};
 use crate::tables::{DbPool, Project, User};
 
 #[derive(Deserialize)]
@@ -25,7 +24,7 @@ pub async fn create_project_handler(payload: ProjectPayload,
     };
     let ProjectPayload{name, description} = payload;
 
-    let user = match User::get(&mut conn, auth.0) {
+    let user = match User::get(&mut conn, auth.id()) {
         Some(user) => user,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
@@ -64,9 +63,9 @@ pub async fn get_project_handler(project_id: String,
     Ok(warp::reply::json(&project))
 }
 
-pub fn project_routes(store: Arc<SessionStore>,
-                      pool: Arc<DbPool>,
-                      project_tx: broadcast::Sender<Project>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+pub fn routes(store: Arc<SessionStore>,
+              pool: Arc<DbPool>,
+              project_tx: broadcast::Sender<Project>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     let create_project = warp::post()
         .and(warp::body::json())
         .and(authenticate(store.clone()))
