@@ -136,7 +136,7 @@ pub async fn login_handler(
 pub fn authenticate(session_store: Arc<SessionStore>) -> 
         impl Filter<Extract = (AuthenticatedUser,), Error = Rejection> + Clone {
     warp::any()
-        .and(warp::header::optional("session-token"))
+        .and(warp::cookie::optional("session-token"))
         .and_then(move |session_token: Option<String>| {
             let store = session_store.clone();
             async move {
@@ -145,6 +145,7 @@ pub fn authenticate(session_store: Arc<SessionStore>) ->
                         if let Some(user) = store.get_user_from_token(&token) {
                             Ok(user)
                         } else {
+                            tracing::warn!("Invalid session token: {}", token);
                             Err(warp::reject::custom(InvalidSessionToken))
                         }
                     }

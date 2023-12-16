@@ -4,7 +4,7 @@ use scrypt::{
     password_hash::{
         errors::Result as HashResult,
         rand_core::OsRng,
-        PasswordHasher, SaltString,
+        PasswordHasher, SaltString, Salt,
     },
     Scrypt
 };
@@ -27,9 +27,8 @@ pub fn to_base64(bytes: &[u8]) -> String {
 
 
 pub fn generate_salt() -> Vec<u8> {
-    let salt = SaltString::generate(&mut OsRng);
-    let mut buf = vec![];
-    salt.decode_b64(&mut buf).unwrap();
+    let mut buf = vec![0u8; Salt::RECOMMENDED_LENGTH];
+    OsRng.fill_bytes(&mut buf);
     buf
 }
 
