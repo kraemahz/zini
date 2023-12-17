@@ -31,6 +31,10 @@ impl warp::reject::Reject for NotFoundError {}
 pub struct ParseError {}
 impl warp::reject::Reject for ParseError {}
 
+#[derive(Debug)]
+pub struct InvalidConfigurationError {}
+impl warp::reject::Reject for InvalidConfigurationError {}
+
 use crate::tables::DbPool;
 pub fn with_db(pool: Arc<DbPool>) -> impl Filter<Extract = (Arc<DbPool>,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || pool.clone())

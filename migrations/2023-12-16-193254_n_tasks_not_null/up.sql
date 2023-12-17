@@ -1,0 +1,1 @@
+ALTER TABLE projects ALTER COLUMN n_tasks SET NOT NULL;

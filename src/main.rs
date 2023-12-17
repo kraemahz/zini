@@ -19,6 +19,11 @@ async fn handle_rejection(err: warp::reject::Rejection) -> Result<impl warp::Rep
         let response = warp::reply::with_status(json, warp::http::StatusCode::BAD_REQUEST);
         return Ok(response);
     }
+    if let Some(_) = err.find::<InvalidConfigurationError>() {
+        let json = warp::reply::json(&"Invalid configuration provided, cannot complete request");
+        let response = warp::reply::with_status(json, warp::http::StatusCode::BAD_REQUEST);
+        return Ok(response);
+    }
     if let Some(_) = err.find::<NotFoundError>() {
         let json = warp::reply::json(&"Not Found: Resource does not exist");
         let response = warp::reply::with_status(json, warp::http::StatusCode::NOT_FOUND);
@@ -34,6 +39,13 @@ async fn handle_rejection(err: warp::reject::Rejection) -> Result<impl warp::Rep
         let response = warp::reply::with_status(json, warp::http::StatusCode::UNAUTHORIZED);
         return Ok(response);
     }
+    if let Some(db_err) = err.find::<DatabaseError>() {
+        tracing::error!("DB Error: {:?}", db_err);
+        let json = warp::reply::json(&"Database Error");
+        let response = warp::reply::with_status(json, warp::http::StatusCode::INTERNAL_SERVER_ERROR);
+        return Ok(response);
+    }
+    tracing::error!("Unhandled Error: {:?}", err);
     let json = warp::reply::json(&"Unhandled error");
     Ok(warp::reply::with_status(json, warp::http::StatusCode::INTERNAL_SERVER_ERROR))
 }
@@ -88,11 +100,13 @@ async fn main() {
     let graph_tx: broadcast::Sender<Graph> = router.announce();
 
     let log_requests = warp::log::custom(|info| {
-        tracing::info!(target: "requests",
-                       method = %info.method(),
-                       path = %info.path(),
-                       status = info.status().as_u16(),
-                       duration = ?info.elapsed());
+        tracing::info!("{} {} {} {}",
+                       info.remote_addr()
+                           .map(|addr| addr.to_string())
+                           .unwrap_or_else(|| "???".into()),
+                       info.method(),
+                       info.path(),
+                       info.status());
     });
 
     let routes = users::routes(store.clone(), pool.clone(), user_tx)

@@ -4,7 +4,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use super::{User, ValidationErrorMessage};
+use super::{User, ValidationErrorMessage, Flow};
 
 #[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::projects)]
@@ -14,7 +14,8 @@ pub struct Project {
     pub owner_id: Uuid,
     pub created: NaiveDateTime,
     pub description: String,
-    pub n_tasks: i32
+    pub n_tasks: i32,
+    pub default_flow_id: Uuid
 }
 
 impl Project {
@@ -22,14 +23,17 @@ impl Project {
                   sender: &mut broadcast::Sender<Self>,
                   author: &User,
                   name: &str,
-                  description: &str) -> QueryResult<Self> {
+                  description: &str,
+                  flow: Option<&Flow>) -> QueryResult<Self> {
+
         let project = Self {
             id: Uuid::new_v4(),
             name: name.to_ascii_uppercase(),
             owner_id: author.id,
             created: chrono::Utc::now().naive_utc(),
             description: description.to_owned(),
-            n_tasks: 0
+            n_tasks: 0,
+            default_flow_id: flow.map(|f| f.id).unwrap_or(Uuid::nil())
         };
 
         if project.name.len() > 10 {
@@ -46,16 +50,10 @@ impl Project {
         sender.send(project.clone()).ok();
         Ok(project)
     }
-
-    pub fn get(conn: &mut PgConnection, project_id: Uuid) -> Option<Self> {
-        use crate::schema::projects::dsl;
-        let (id, name, owner_id, created, description, n_tasks) = dsl::projects.find(project_id)
-            .get_result::<(Uuid, String, Uuid, NaiveDateTime, String, Option<i32>)>(conn)
-            .optional()
-            .ok()??;
-        Some(Project{id, name, owner_id, created, description, n_tasks: n_tasks.unwrap_or(0)})
-    }
 }
+
+crate::zini_table!(Project, crate::schema::projects::dsl::projects);
+
 
 #[cfg(test)]
 mod test {
@@ -73,7 +71,12 @@ mod test {
         let (mut tx, _) = broadcast::channel(1);
 
         let user = User::create(&mut conn, &mut user_tx, "test@example.com", None, None).expect("user");
-        let proj = Project::create(&mut conn, &mut tx, &user, "test_proj", "This is a test").expect("proj");
+        let proj = Project::create(&mut conn,
+                                   &mut tx,
+                                   &user,
+                                   "test_proj",
+                                   "This is a test",
+                                   None).expect("proj");
         let proj2 = Project::get(&mut conn, proj.id).expect("proj2");
         assert_eq!(proj, proj2);
         assert_eq!(proj.name, "TEST_PROJ"); // Forced uppercase

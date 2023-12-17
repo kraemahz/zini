@@ -4,17 +4,18 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use super::User;
+use super::*;
 
 
 #[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::flows)]
 pub struct Flow {
-    id: Uuid,
-    owner_id: Uuid,
-    created: NaiveDateTime,
-    flow_name: String,
-    description: String
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub created: NaiveDateTime,
+    pub flow_name: String,
+    pub description: String,
+    pub entry_node_id: Uuid
 }
 
 impl Flow {
@@ -22,18 +23,42 @@ impl Flow {
                      sender: &mut broadcast::Sender<Self>,
                      author: &User,
                      flow_name: String,
-                     description: String) -> QueryResult<Self>
-        where C: Connection<Backend = Pg>
+                     description: String,
+                     entry_node: &FlowNode,
+                     graph: Vec<(&FlowNode, &FlowNode)>,
+                     exits: Vec<&FlowNode>) -> QueryResult<Self>
+        where C: Connection<Backend = Pg> + LoadConnection
     {
+        let sinks: Vec<_> = graph.iter().map(|(_, &ref sink)| sink).collect();
+        let sources: Vec<_> = graph.iter().map(|(&ref source, _)| source).collect();
+
+        let exits_not_in_graph = !exits.iter()
+            .any(|e| sinks.contains(e));
+        let entry_not_in_graph = !sources.contains(&entry_node);
+
+        if graph.is_empty() || exits_not_in_graph || entry_not_in_graph || exits.is_empty() {
+            let kind = diesel::result::DatabaseErrorKind::CheckViolation;
+            let msg = Box::new(ValidationErrorMessage{message: "Invalid username".to_string(),
+                                                      column: "username".to_string(),
+                                                      constraint_name: "username_limits".to_string()});
+            return Err(diesel::result::Error::DatabaseError(kind, msg));
+        }
+
         let flow = Self {
-            id: Uuid::new_v4(),
-            owner_id: author.id,
-            created: chrono::Utc::now().naive_utc(),
-            flow_name: flow_name.to_ascii_uppercase(),
-            description };
+                id: Uuid::new_v4(),
+                owner_id: author.id,
+                created: chrono::Utc::now().naive_utc(),
+                flow_name: flow_name.to_ascii_uppercase(),
+                description,
+                entry_node_id: entry_node.id
+        };
+
         diesel::insert_into(crate::schema::flows::table)
             .values(&flow)
             .execute(conn)?;
+        FlowConnection::connect_all(conn, flow.id, graph)?;
+        FlowExit::create_exits(conn, flow.id, exits)?;
+        
         sender.send(flow.clone()).ok();
         Ok(flow)
     }
@@ -48,9 +73,35 @@ impl Flow {
             .ok()??;
         Some(task)
     }
+
+    pub fn list<C>(conn: &mut C,
+                   page: u32,
+                   page_size: u32) -> Vec<Self> 
+        where C: Connection<Backend = Pg> + LoadConnection
+    {
+        let offset = page.saturating_sub(1) * page_size;
+        match crate::schema::flows::table
+                .limit(page_size as i64)
+                .offset(offset as i64)
+                .load::<Self>(conn) {
+            Ok(list) => list,
+            Err(err) => {
+                tracing::warn!("DB List Query Failed: {:?}", err);
+                vec![]
+            }
+        }
+    }
+
+    pub fn set_flow_entry<C>(&mut self, conn: &mut C, node: &FlowNode) -> QueryResult<()>
+        where C: Connection<Backend = Pg> + LoadConnection
+    {
+        self.entry_node_id = node.id;
+        FlowAssignment::assign(conn, self.id, node)?;
+        Ok(())
+    }
 }
 
-#[derive(Queryable, Insertable, Clone, Debug, Serialize)]
+#[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::flow_nodes)]
 pub struct FlowNode {
     pub id: Uuid,
@@ -69,11 +120,11 @@ impl FlowNode {
         Some(flow_node)
     }
 
-    pub fn create<C>(conn: &mut C, node_name: String) -> QueryResult<Self>
+    pub fn create<C>(conn: &mut C, node_name: &str) -> QueryResult<Self>
         where C: Connection<Backend = Pg>
     {
         let id = Uuid::new_v4();
-        let new_flow_node = FlowNode{id, node_name};
+        let new_flow_node = FlowNode{id, node_name: node_name.to_string()};
         diesel::insert_into(crate::schema::flow_nodes::table)
             .values(&new_flow_node)
             .execute(conn)?;
@@ -89,7 +140,25 @@ pub struct FlowConnection {
 }
 
 impl FlowConnection {
-    pub fn connect_all<C>(conn: &mut C, flow_id: Uuid, nodes: Vec<(FlowNode, FlowNode)>) -> QueryResult<()>
+    pub fn edges<C>(conn: &mut C, node_id: Uuid) -> QueryResult<Vec<FlowNode>>
+        where C: Connection<Backend = Pg> + LoadConnection
+    {
+        use crate::schema::flow_node_connections;
+        use crate::schema::flow_nodes;
+
+        let cnx = flow_node_connections::table
+            .filter(flow_node_connections::dsl::from_node_id.eq(node_id))
+            .load::<Self>(conn)?;
+        let mut result = vec![];
+        for c in cnx {
+            let flow_node = flow_nodes::dsl::flow_nodes.find(c.to_node_id)
+                .get_result::<FlowNode>(conn)?;
+            result.push(flow_node);
+        }
+        Ok(result)
+    }
+
+    pub fn connect_all<C>(conn: &mut C, flow_id: Uuid, nodes: Vec<(&FlowNode, &FlowNode)>) -> QueryResult<()>
         where C: Connection<Backend = Pg> + LoadConnection
     {
         // 1. Get all nodes in this flow from FlowAssignment
@@ -116,6 +185,8 @@ impl FlowConnection {
             diesel::insert_into(crate::schema::flow_node_connections::table)
                 .values(&new_connection)
                 .execute(conn)?;
+            FlowAssignment::assign(conn, flow_id, from_node)?;
+            FlowAssignment::assign(conn, flow_id, to_node)?;
         }
 
         Ok(())
@@ -125,8 +196,8 @@ impl FlowConnection {
 #[derive(Queryable, Insertable, Clone, Debug)]
 #[diesel(table_name = crate::schema::flow_assignments)]
 pub struct FlowAssignment {
-    flow_id: Uuid,
-    node_id: Uuid,
+    pub flow_id: Uuid,
+    pub node_id: Uuid,
 }
 
 impl FlowAssignment {
@@ -143,28 +214,6 @@ impl FlowAssignment {
 
 
 #[derive(Queryable, Insertable, Clone, Debug)]
-#[diesel(table_name = crate::schema::flow_entries)]
-pub struct FlowEntry {
-    flow_id: Uuid,
-    node_id: Uuid,
-}
-
-impl FlowEntry {
-    pub fn set_flow_entry<C>(conn: &mut C, flow_id: Uuid, node_id: Uuid) -> QueryResult<()>
-        where C: Connection<Backend = Pg>
-    {
-        let entry = FlowEntry{flow_id, node_id};
-        diesel::insert_into(crate::schema::flow_entries::table)
-            .values(&entry)
-            .on_conflict(crate::schema::flow_entries::flow_id)
-            .do_update()
-            .set(crate::schema::flow_entries::node_id.eq(node_id))
-            .execute(conn)?;
-        Ok(())
-    }
-}
-
-#[derive(Queryable, Insertable, Clone, Debug)]
 #[diesel(table_name = crate::schema::flow_exits)]
 pub struct FlowExit {
     flow_id: Uuid,
@@ -172,7 +221,7 @@ pub struct FlowExit {
 }
 
 impl FlowExit {
-    pub fn clear_and_set<C>(conn: &mut C, flow_id: Uuid, exit_nodes: Vec<FlowNode>) -> QueryResult<()>
+    pub fn create_exits<C>(conn: &mut C, flow_id: Uuid, exit_nodes: Vec<&FlowNode>) -> QueryResult<()>
         where C: Connection<Backend = Pg>
     {
         diesel::delete(crate::schema::flow_exits::table)
@@ -183,6 +232,7 @@ impl FlowExit {
             diesel::insert_into(crate::schema::flow_exits::table)
                 .values(&new_exit)
                 .execute(conn)?;
+            FlowAssignment::assign(conn, flow_id, &node)?;
         }
         Ok(())
     }
@@ -202,14 +252,13 @@ impl Graph {
     where
         C: Connection<Backend = Pg> + LoadConnection
     {
+        use crate::schema::flows;
         // Fetch entry point
-        let entry_point_id = crate::schema::flow_entries::table
-            .filter(crate::schema::flow_entries::flow_id.eq(flow_id))
-            .select(crate::schema::flow_entries::node_id)
-            .first::<Uuid>(conn)?;
+        let flow = flows::table.find(flow_id)
+            .get_result::<Flow>(conn)?;
 
         let entry_point = crate::schema::flow_nodes::table
-            .find(entry_point_id)
+            .find(flow.entry_node_id)
             .first::<FlowNode>(conn)?;
 
         // Fetch exit points
@@ -266,8 +315,20 @@ mod test {
         let (mut tx, _) = broadcast::channel(1);
         let (mut user_tx, _) = broadcast::channel(1);
 
+        let entry_node = FlowNode::create(&mut conn, "Open").expect("entry");
+        let exit_node = FlowNode::create(&mut conn, "Closed").expect("entry");
+        let graph = vec![(&entry_node, &exit_node)];
+        let exits = vec![&exit_node];
+
         let user = User::create(&mut conn, &mut user_tx, "test@example.com", None, None).expect("user");
-        let flow = Flow::create(&mut conn, &mut tx, &user, "flow".to_string(), "".to_string()).expect("flow");
+        let flow = Flow::create(&mut conn,
+                                &mut tx,
+                                &user,
+                                "flow".to_string(),
+                                "".to_string(),
+                                &entry_node,
+                                graph,
+                                exits).expect("flow");
         let flow2 = Flow::get(&mut conn, flow.id).expect("task2");
 
         assert_eq!(flow, flow2);

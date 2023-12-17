@@ -1,0 +1,1 @@
+ALTER TABLE projects ALTER COLUMN n_tasks DROP NOT NULL;

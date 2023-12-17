@@ -23,6 +23,9 @@ pub struct FlowNodePayload {
 pub struct NewFlowPayload {
     flow_name: String,
     description: Option<String>,
+    entry: FlowNodePayload,
+    exits: Vec<FlowNodePayload>,
+    connections: Vec<(FlowNodePayload, FlowNodePayload)>
 }
 
 #[derive(Deserialize, Debug, Clone, Serialize)]
@@ -31,6 +34,20 @@ pub struct UpdateFlowPayload {
     entry: FlowNodePayload,
     exits: Vec<FlowNodePayload>,
     connections: Vec<(FlowNodePayload, FlowNodePayload)>
+}
+
+
+fn find_node<'a>(nodes: &[&'a FlowNode], node_to_find: FlowNodePayload) -> Option<&'a FlowNode> {
+    for node_from in nodes.iter() {
+        if let Some(id) = &node_to_find.id {
+            if &node_from.id == id {
+                return Some(node_from);
+            }
+        } else if node_to_find.name == node_from.node_name {
+            return Some(node_from);
+        }
+    }
+    None
 }
 
 
@@ -46,7 +63,42 @@ async fn create_flow_handler(
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
     };
 
-    let NewFlowPayload{flow_name, description} = payload;
+    let NewFlowPayload{flow_name, description, entry, exits, connections} = payload;
+
+    let mut nodes: Vec<(FlowNode, FlowNode)> = vec![];
+    for (node_from, node_to) in connections.into_iter() {
+        let source = match create_or_get_flow_node(&mut conn, node_from) {
+            Ok(s) => s,
+            Err(_) => return Err(warp::reject::custom(DatabaseError{}))
+        };
+        let sink = match create_or_get_flow_node(&mut conn, node_to) {
+            Ok(s) => s,
+            Err(_) => return Err(warp::reject::custom(DatabaseError{}))
+        };
+        nodes.push((source, sink));
+    }
+    let mut sources: Vec<&FlowNode> = vec![];
+    let mut sinks: Vec<&FlowNode> = vec![];
+    let mut graph: Vec<(&FlowNode, &FlowNode)> = vec![];
+
+    for (source, sink) in nodes.iter() {
+        sources.push(source);
+        sinks.push(sink);
+        graph.push((source, sink));
+    }
+
+    let entry: &FlowNode = match find_node(&sources, entry) {
+        Some(entry) => entry,
+        None => return Err(warp::reject::custom(InvalidConfigurationError{}))
+    };
+    let mut exit_refs = vec![];
+    for exit in exits {
+        match find_node(&sinks, exit) {
+            Some(exit) => exit_refs.push(exit),
+            None => return Err(warp::reject::custom(InvalidConfigurationError{}))
+        }
+    }
+
     let user = match User::get(&mut conn, auth.id()) {
         Some(user) => user,
         None => return Err(warp::reject::custom(NotFoundError{})),
@@ -57,7 +109,10 @@ async fn create_flow_handler(
         &mut sender,
         &user,
         flow_name,
-        description.unwrap_or_else(String::new)
+        description.unwrap_or_else(String::new),
+        &entry,
+        graph,
+        exit_refs
     ) {
         Ok(flow) => flow,
         Err(_) => return Err(warp::reject::custom(ConflictError{}))
@@ -68,7 +123,7 @@ async fn create_flow_handler(
     Ok(reply)
 }
 
-fn create_or_get_flow_node<C>(conn: &mut C, node: FlowNodePayload, flow_id: Uuid) -> QueryResult<FlowNode>
+fn create_or_get_flow_node<C>(conn: &mut C, node: FlowNodePayload) -> QueryResult<FlowNode>
     where C: Connection<Backend = Pg> + LoadConnection
 {
     let flow_node = match node.id {
@@ -76,9 +131,8 @@ fn create_or_get_flow_node<C>(conn: &mut C, node: FlowNodePayload, flow_id: Uuid
             Some(node) => node,
             None => return Err(diesel::result::Error::NotFound)
         },
-        None => FlowNode::create(conn, node.name)?
+        None => FlowNode::create(conn, &node.name)?
     };
-    FlowAssignment::assign(conn, flow_id, &flow_node)?;
     Ok(flow_node)
 }
 
@@ -102,6 +156,17 @@ async fn get_flow_graph_handler(
     Ok(reply)
 }
 
+const NUM_FLOWS_PER_PAGE: u32 = 10;
+
+async fn list_flows_handler(page: u32, _auth: AuthenticatedUser, db_pool: Arc<DbPool>) -> Result<impl Reply, Rejection> {
+    let mut conn = match db_pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Err(warp::reject::custom(DatabaseError{})),
+    };
+    let flows = Flow::list(&mut conn, page, NUM_FLOWS_PER_PAGE);
+    Ok(warp::reply::json(&flows))
+}
+
 async fn update_flow_graph_handler(
     payload: UpdateFlowPayload,
     _auth: AuthenticatedUser,
@@ -115,26 +180,35 @@ async fn update_flow_graph_handler(
     let UpdateFlowPayload{flow_id, entry, exits, connections} = payload;
 
     conn.transaction(|transaction| {
+        let mut flow = match Flow::get(transaction, flow_id) {
+            Some(f) => f,
+            None => return Err(diesel::result::Error::NotFound)
+        };
         // Set Entry Node
-        let entry = create_or_get_flow_node(transaction, entry, flow_id)?;
-        FlowEntry::set_flow_entry(transaction, flow_id, entry.id)?;
+        let entry = create_or_get_flow_node(transaction, entry)?;
+        flow.set_flow_entry(transaction, &entry)?;
 
         // Set Exit Nodes
         let mut exit_nodes = vec![];
         for exit in exits {
-            let exit_node = create_or_get_flow_node(transaction, exit, flow_id)?;
+            let exit_node = create_or_get_flow_node(transaction, exit)?;
             exit_nodes.push(exit_node);
         }
-        FlowExit::clear_and_set(transaction, flow_id, exit_nodes)?;
+        let exit_refs: Vec<&FlowNode> = exit_nodes.iter().collect();
+        FlowExit::create_exits(transaction, flow_id, exit_refs)?;
 
         // Set Edges
         let mut edges = vec![];
         for (edge_from, edge_to) in connections {
-            let edge_from = create_or_get_flow_node(transaction, edge_from, flow_id)?;
-            let edge_to = create_or_get_flow_node(transaction, edge_to, flow_id)?;
+            let edge_from = create_or_get_flow_node(transaction, edge_from)?;
+            let edge_to = create_or_get_flow_node(transaction, edge_to)?;
             edges.push((edge_from, edge_to));
         }
-        FlowConnection::connect_all(transaction, flow_id, edges)?;
+        let edge_refs: Vec<(&FlowNode, &FlowNode)> = edges
+            .iter()
+            .map(|(source, sink)| (source, sink))
+            .collect();
+        FlowConnection::connect_all(transaction, flow_id, edge_refs)?;
 
         Ok::<(), diesel::result::Error>(())
     }).map_err(|_| {
@@ -160,6 +234,13 @@ pub fn routes(store: Arc<SessionStore>,
         .and(with_broadcast(flow_tx))
         .and_then(create_flow_handler);
 
+    let list_flows = warp::path("list")
+        .and(warp::path::param())
+        .and(warp::get())
+        .and(authenticate(store.clone()))
+        .and(with_db(pool.clone()))
+        .and_then(list_flows_handler);
+
     let get_flow_graph = warp::get()
         .and(warp::path::param())
         .and(authenticate(store.clone()))
@@ -176,6 +257,7 @@ pub fn routes(store: Arc<SessionStore>,
 
     warp::path("flow")
         .and(create_flow
+             .or(list_flows)
              .or(get_flow_graph)
              .or(update_flow_graph))
 }

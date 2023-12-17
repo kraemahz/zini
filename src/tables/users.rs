@@ -114,17 +114,9 @@ impl User {
             .ok()??;
         Some(user)
     }
-
-    pub fn get(conn: &mut PgConnection, id: Uuid) -> Option<Self> {
-        use crate::schema::users::dsl;
-        let user = dsl::users.find(id)
-            .get_result::<User>(conn)
-            .optional()
-            .ok()??;
-        Some(user)
-    }
-
 }
+
+crate::zini_table!(User, crate::schema::users::dsl::users);
 
 #[cfg(test)]
 mod test {
