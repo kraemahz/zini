@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use diesel::PgConnection;
+use diesel::{PgConnection, QueryResult};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -8,7 +8,17 @@ use warp::{Filter, Reply, Rejection};
 
 use super::*;
 use crate::router::with_broadcast;
-use crate::tables::{DbPool, Project, User, Task, FlowNode, FlowConnection, TaskFlow};
+use crate::tables::{
+    DbPool,
+    FlowConnection,
+    FlowNode,
+    Project,
+    Task,
+    TaskFlow,
+    TaskLink,
+    TaskUpdate,
+    User,
+};
 
 #[derive(Deserialize)]
 pub struct TaskPayload {
@@ -55,30 +65,63 @@ async fn create_task_handler(payload: TaskPayload,
     Ok(warp::reply::json(&dict))
 }
 
-#[derive(Serialize)]
-pub struct TaskOutPayload {
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskStatePayload {
     task: Task,
     tags: Vec<String>,
     watchers: Vec<User>,
     state: FlowNode,
+    links_out: Vec<TaskLink>,
+    links_in: Vec<TaskLink>,
     valid_transitions: Vec<FlowNode>
 }
 
-fn get_active_node(conn: &mut PgConnection, flows: &[TaskFlow]) -> Result<FlowNode, Rejection> {
-    let flow = match flows.first() {
-        Some(flow) => flow,
-        None => return Err(warp::reject::custom(DatabaseError{}))
-    };
-
-    let node_id = match flow.current_node_id {
-        Some(node_id) => node_id,
-        None => return Err(warp::reject::custom(DatabaseError{}))
-    };
-
-    match FlowNode::get(conn, node_id) {
-        Some(node) => Ok(node),
-        None => Err(warp::reject::custom(DatabaseError{}))
+impl TaskStatePayload {
+    pub fn build(conn: &mut PgConnection, task: Task) -> QueryResult<Self> {
+        let flows = task.flows(conn)?;
+        let tags = task.tags(conn).ok().unwrap_or_else(Vec::new);
+        let watchers = task.watchers(conn).ok().unwrap_or_else(Vec::new);
+        let state = TaskFlow::get_active_node(conn, &flows)?;
+        let valid_transitions = FlowConnection::edges(conn, state.id)?;
+        let links_out = TaskLink::get_outgoing(conn, &task)?;
+        let links_in = TaskLink::get_incoming(conn, &task)?;
+        Ok(Self { task, tags, watchers, state, links_out, links_in, valid_transitions })
     }
+}
+
+async fn update_task_handler(task_id: String,
+                             payload: TaskUpdate,
+                             auth: AuthenticatedUser,
+                             db_pool: Arc<DbPool>,
+                             sender: broadcast::Sender<TaskStatePayload>) -> Result<impl Reply, Rejection> {
+    let mut conn = match db_pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Err(warp::reject::custom(DatabaseError{})),
+    };
+    let task_id = match Uuid::parse_str(&task_id) {
+        Ok(task_id) => task_id,
+        Err(_) => {
+            return Err(warp::reject::custom(ParseError{}));
+        }
+    };
+    let mut task = match Task::get(&mut conn, task_id) {
+        Some(task) => task,
+        None => {
+            return Err(warp::reject::custom(NotFoundError{}));
+        }
+    };
+
+    match task.update(&mut conn, auth, payload) {
+        Ok(state) => state,
+        Err(_) => return Err(warp::reject::custom(DatabaseError{}))
+    };
+
+    let task_state = match TaskStatePayload::build(&mut conn, task) {
+        Ok(state) => state,
+        Err(_) => return Err(warp::reject::custom(DatabaseError{}))
+    };
+    sender.send(task_state.clone()).ok();
+    Ok(warp::reply::json(&task_state))
 }
 
 async fn get_task_handler(task_id: String,
@@ -101,18 +144,10 @@ async fn get_task_handler(task_id: String,
         }
     };
 
-    let flows = match task.flows(&mut conn) {
-        Ok(flows) => flows,
+    let task_payload = match TaskStatePayload::build(&mut conn, task) {
+        Ok(state) => state,
         Err(_) => return Err(warp::reject::custom(DatabaseError{}))
     };
-    let tags = task.tags(&mut conn).ok().unwrap_or_else(Vec::new);
-    let watchers = task.watchers(&mut conn).ok().unwrap_or_else(Vec::new);
-    let state = get_active_node(&mut conn, &flows)?;
-    let valid_transitions = match FlowConnection::edges(&mut conn, state.id) {
-        Ok(valid) => valid,
-        Err(_) => return Err(warp::reject::custom(DatabaseError{})),
-    };
-    let task_payload = TaskOutPayload { task, tags, watchers, state, valid_transitions };
     Ok(warp::reply::json(&task_payload))
 }
 
@@ -143,13 +178,22 @@ async fn filter_tasks_handler(payload: QueryPayload,
 
 pub fn routes(store: Arc<SessionStore>,
               pool: Arc<DbPool>,
-              task_tx: broadcast::Sender<Task>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+              task_tx: broadcast::Sender<Task>,
+              task_update_tx: broadcast::Sender<TaskStatePayload>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     let create_task = warp::post()
         .and(warp::body::json())
         .and(authenticate(store.clone()))
         .and(with_db(pool.clone()))
         .and(with_broadcast(task_tx))
         .and_then(create_task_handler);
+
+    let update_task = warp::put()
+        .and(warp::path::param())
+        .and(warp::body::json())
+        .and(authenticate(store.clone()))
+        .and(with_db(pool.clone()))
+        .and(with_broadcast(task_update_tx))
+        .and_then(update_task_handler);
 
     let get_task = warp::get()
         .and(warp::path::param())
@@ -167,5 +211,6 @@ pub fn routes(store: Arc<SessionStore>,
     warp::path("task")
         .and(filter_tasks
              .or(create_task)
+             .or(update_task)
              .or(get_task))
 }

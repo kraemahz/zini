@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use chrono::NaiveDateTime;
 use diesel::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use super::Flow;
-use super::projects::Project;
-use super::users::User;
+use crate::api::AuthenticatedUser;
+
+use super::{Flow, FlowNode, ValidationErrorMessage, Project, User, FlowConnection};
+use super::users::UserData;
 
 
 #[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
@@ -66,12 +67,19 @@ impl Task {
                 current_node_id: flow.map(|f| f.entry_node_id),
                 order_added: 0
             };
-            diesel::insert_into(crate::schema::task_flows::table)
-                .values(&task_flow)
-                .execute(transact)?;
+            let watcher = TaskWatcher {
+                task_id: task.id,
+                watcher_id: author.id,
+            };
 
             diesel::insert_into(crate::schema::tasks::table)
                 .values(&task)
+                .execute(transact)?;
+            diesel::insert_into(crate::schema::task_watchers::table)
+                .values(&watcher)
+                .execute(transact)?;
+            diesel::insert_into(crate::schema::task_flows::table)
+                .values(&task_flow)
                 .execute(transact)?;
             diesel::insert_into(crate::schema::task_projects::table)
                 .values(&task_project)
@@ -146,11 +154,11 @@ impl Task {
             .load::<String>(conn)
     }
 
-    pub fn add_watcher(&self, conn: &mut PgConnection, user: &User) -> QueryResult<()> {
+    pub fn add_watcher(&self, conn: &mut PgConnection, user_id: Uuid) -> QueryResult<()> {
         use crate::schema::task_watchers;
         let task_watcher = TaskWatcher {
             task_id: self.id,
-            watcher_id: user.id
+            watcher_id: user_id
         };
         diesel::insert_into(task_watchers::table)
             .values(&task_watcher)
@@ -170,11 +178,12 @@ impl Task {
     pub fn watchers(&self, conn: &mut PgConnection) -> QueryResult<Vec<User>> {
         use crate::schema::task_watchers;
         use crate::schema::users;
-        task_watchers::table
+        let users = task_watchers::table
             .inner_join(users::table)
             .filter(task_watchers::task_id.eq(&self.id))
             .select(users::all_columns)
-            .load::<User>(conn)
+            .load::<UserData>(conn)?;
+        Ok(users.into_iter().map(|user| user.into()).collect())
     }
 
     pub fn query(conn: &mut PgConnection,
@@ -230,17 +239,135 @@ impl Task {
         }
         flows
     }
-}
 
+    pub fn add_link(&self, conn: &mut PgConnection, task_id: Uuid, link_type: TaskLinkType) -> QueryResult<()> {
+        use crate::schema::task_links;
+        let task_link = TaskLink{task_from_id: self.id,
+                                 task_to_id: task_id, 
+                                 link_type};
+        let data: TaskLinkData = task_link.into();
+        diesel::insert_into(task_links::table)
+            .values(&data)
+            .execute(conn)?;
+        Ok(())
+    }
+
+    pub fn rm_link(&self, conn: &mut PgConnection, task_id: Uuid) -> QueryResult<()> {
+        use crate::schema::task_links;
+        diesel::delete(task_links::table)
+            .filter(task_links::dsl::task_from_id.eq(self.id))
+            .filter(task_links::dsl::task_to_id.eq(task_id))
+            .execute(conn)?;
+        Ok(())
+    }
+
+    pub fn transition(&self, conn: &mut PgConnection, node_id: Uuid) -> QueryResult<()> {
+        for flow in self.flows(conn)? {
+            if let Some(current_node_id) = flow.current_node_id {
+                let valid_transitions = FlowConnection::edges(conn, current_node_id)?;
+                let contains_id = valid_transitions.iter().any(|node| node.id == node_id);
+                if contains_id {
+                    use crate::schema::task_flows::dsl::*;
+                    diesel::update(task_flows.filter(task_id.eq(self.id))
+                                             .filter(flow_id.eq(flow.flow_id)))
+                        .set(current_node_id.eq(Some(node_id)))
+                        .execute(conn)?;
+                    return Ok(())
+                }
+            }
+        }
+
+        let kind = diesel::result::DatabaseErrorKind::CheckViolation;
+        let msg = Box::new(ValidationErrorMessage{message: format!("No valid transition to {} found", node_id),
+                                                  column: "current_node_id".to_string(),
+                                                  constraint_name: "valid_transition_current_node_id".to_string()});
+        Err(diesel::result::Error::DatabaseError(kind, msg))
+    }
+
+    pub fn update(&mut self,
+                  conn: &mut PgConnection,
+                  user: AuthenticatedUser,
+                  update: TaskUpdate) -> QueryResult<()> {
+        match update {
+            TaskUpdate::AssignOther{user_id} => self.assign_user(conn, user_id),
+            TaskUpdate::AssignSelf => self.assign_user(conn, user.id()),
+            TaskUpdate::ChangeDescription { description } => self.set_description(conn, &description),
+            TaskUpdate::ChangeTitle { title } => self.set_title(conn, &title),
+            TaskUpdate::Link { task_id, link_type } => self.add_link(conn, task_id, link_type),
+            TaskUpdate::StopWatchingTask => self.rm_watcher(conn, user.id()),
+            TaskUpdate::Tag { name } => self.add_tag(conn, &name),
+            TaskUpdate::Transition { node_id } => self.transition(conn, node_id),
+            TaskUpdate::Unassign => self.unassign_user(conn),
+            TaskUpdate::WatchTask => self.add_watcher(conn, user.id()),
+            TaskUpdate::Undo => Ok(()),  // TODO
+            TaskUpdate::Unlink { task_id } => self.rm_link(conn, task_id),
+            TaskUpdate::Untag { name } => self.rm_tag(conn, &name)
+        }
+    }
+
+    fn assign_user(&mut self, conn: &mut PgConnection, user_id: Uuid) -> QueryResult<()> {
+        use crate::schema::tasks::dsl;
+        self.assignee_id = Some(user_id);
+        diesel::update(dsl::tasks.filter(dsl::id.eq(self.id)))
+            .set(dsl::assignee_id.eq(self.assignee_id))
+            .execute(conn)?;
+        Ok(())
+    }
+
+    fn unassign_user(&mut self, conn: &mut PgConnection) -> QueryResult<()> {
+        use crate::schema::tasks::dsl;
+        self.assignee_id = None;
+        diesel::update(dsl::tasks.filter(dsl::id.eq(self.id)))
+            .set(dsl::assignee_id.eq(self.assignee_id))
+            .execute(conn)?;
+        Ok(())
+    }
+
+    fn set_description(&mut self, conn: &mut PgConnection, description: &str) -> QueryResult<()> {
+        use crate::schema::tasks::dsl;
+        self.description = description.to_string();
+        diesel::update(dsl::tasks.filter(dsl::id.eq(self.id)))
+            .set(dsl::description.eq(description))
+            .execute(conn)?;
+        Ok(())
+    }
+    fn set_title(&mut self, conn: &mut PgConnection, title: &str) -> QueryResult<()> {
+        use crate::schema::tasks::dsl;
+        self.title = title.to_string();
+        diesel::update(dsl::tasks.filter(dsl::id.eq(self.id)))
+            .set(dsl::title.eq(title))
+            .execute(conn)?;
+        Ok(())
+    }
+}
 crate::zini_table!(Task, crate::schema::tasks::dsl::tasks);
 
+#[derive(Debug, Clone, Deserialize)]
+pub enum TaskUpdate {
+    AssignOther{user_id: Uuid},
+    AssignSelf,
+    ChangeDescription{description: String},
+    ChangeTitle{title: String},
+    Link{task_id: Uuid, link_type: TaskLinkType},
+    StopWatchingTask,
+    Tag{name: String},
+    Transition{node_id: Uuid},
+    Unassign,
+    Undo,
+    Unlink{task_id: Uuid},
+    Untag{name: String},
+    WatchTask,
+}
+
+/// Represents a label on a Task in the database
+/// For future use we'll allow attaching purposes to tags
 #[derive(Queryable, Insertable, Serialize)]
 #[diesel(table_name = crate::schema::tags)]
 pub struct Tag {
     pub name: String,
 }
 
-// Join tables for many-to-many relationships
+/// Join table for all labels on the Task
 #[derive(Queryable, Insertable)]
 #[diesel(table_name = crate::schema::task_tags)]
 struct TaskTag {
@@ -248,6 +375,7 @@ struct TaskTag {
     pub tag_name: String,
 }
 
+/// Represents a user watching a Task for updates
 #[derive(Queryable, Insertable)]
 #[diesel(table_name = crate::schema::task_watchers)]
 struct TaskWatcher {
@@ -255,6 +383,7 @@ struct TaskWatcher {
     pub watcher_id: Uuid,
 }
 
+/// Represents the state of a task in a Flow
 #[derive(Queryable, Insertable)]
 #[diesel(table_name = crate::schema::task_flows)]
 pub struct TaskFlow {
@@ -262,6 +391,153 @@ pub struct TaskFlow {
     pub flow_id: Uuid,
     pub current_node_id: Option<Uuid>,
     pub order_added: i32
+}
+
+/// Gets the FlowNode active from a list of TaskFlows
+impl TaskFlow {
+    pub fn get_active_node(conn: &mut PgConnection, flows: &[Self]) -> QueryResult<FlowNode> {
+        // TODO: check other TaskFlows
+        let flow = match flows.first() {
+            Some(flow) => flow,
+            None => {
+                let kind = diesel::result::DatabaseErrorKind::CheckViolation;
+                let msg = Box::new(ValidationErrorMessage{message: "Task is missing a flow".to_string(),
+                                                          column: "task_id".to_string(),
+                                                          constraint_name: "task_flow_required".to_string()});
+                return Err(diesel::result::Error::DatabaseError(kind, msg));
+            }
+        };
+
+        let node_id = match flow.current_node_id {
+            Some(node_id) => node_id,
+            None => {
+                let kind = diesel::result::DatabaseErrorKind::CheckViolation;
+                let msg = Box::new(ValidationErrorMessage{
+                    message: "TaskFlow has no valid node id".to_string(),
+                    column: "current_node_id".to_string(),
+                    constraint_name: "task_flow_current_node_id_null".to_string()}
+                );
+                return Err(diesel::result::Error::DatabaseError(kind, msg));
+            }
+        };
+
+        match FlowNode::get(conn, node_id) {
+            Some(node) => Ok(node),
+            None => {
+                let kind = diesel::result::DatabaseErrorKind::CheckViolation;
+                let msg = Box::new(ValidationErrorMessage{
+                    message: "FlowNode is missing".to_string(),
+                    column: "current_node_id".to_string(),
+                    constraint_name: "task_flow_current_node_id_exists".to_string()}
+                );
+                return Err(diesel::result::Error::DatabaseError(kind, msg));
+            }
+        }
+    }
+}
+
+/// Represents links between tasks for dependencies and subtask behavior
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct TaskLink {
+    task_from_id: Uuid,
+    task_to_id: Uuid,
+    link_type: TaskLinkType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskLinkType {
+    SubtaskOf,
+    DependsOn,
+    RelatedTo
+}
+
+impl TryFrom<i32> for TaskLinkType {
+    type Error = i32;
+    fn try_from(entry: i32) -> Result<Self, Self::Error> {
+        match entry {
+            0 => Ok(Self::SubtaskOf),
+            1 => Ok(Self::DependsOn),
+            2 => Ok(Self::RelatedTo),
+            unk => Err(unk)
+        }
+    }
+}
+
+impl Into<i32> for TaskLinkType {
+    fn into(self) -> i32 {
+        match self {
+            Self::SubtaskOf => 0,
+            Self::DependsOn => 1,
+            Self::RelatedTo => 2,
+        }
+    }
+}
+
+impl TaskLinkType {
+    const _LINK_TYPES: &'static [&'static str] = &["SUBTASK OF", "DEPENDS ON", "RELATED TO"];
+}
+
+#[derive(Queryable, Insertable)]
+#[diesel(table_name = crate::schema::task_links)]
+struct TaskLinkData {
+    task_from_id: Uuid,
+    task_to_id: Uuid,
+    link_type: i32,
+}
+
+impl From<TaskLink> for TaskLinkData {
+    fn from(link: TaskLink) -> TaskLinkData {
+        let TaskLink{task_from_id, task_to_id, link_type} = link;
+        TaskLinkData {
+            task_from_id,
+            task_to_id,
+            link_type: link_type.into()
+        }
+    }
+}
+
+impl From<TaskLinkData> for TaskLink {
+    fn from(link: TaskLinkData) -> TaskLink {
+        let TaskLinkData{task_from_id, task_to_id, link_type} = link;
+        TaskLink {
+            task_from_id,
+            task_to_id,
+            link_type: link_type.try_into().unwrap()
+        }
+    }
+}
+
+impl TaskLink {
+    pub fn create(conn: &mut PgConnection,
+                  link_from: &Task,
+                  link_to: &Task,
+                  link_type: TaskLinkType) -> QueryResult<Self> {
+        use crate::schema::task_links;
+        let task_link = TaskLink{task_from_id: link_from.id,
+                                 task_to_id: link_to.id, 
+                                 link_type};
+        let data: TaskLinkData = task_link.into();
+        diesel::insert_into(task_links::table)
+            .values(&data)
+            .execute(conn)?;
+        Ok(task_link)
+    }
+
+    pub fn get_outgoing(conn: &mut PgConnection, link_from: &Task) -> QueryResult<Vec<Self>> {
+        use crate::schema::task_links;
+        let links = task_links::table
+            .filter(task_links::dsl::task_from_id.eq(link_from.id))
+            .load::<TaskLinkData>(conn)?;
+        Ok(links.into_iter().map(|link| link.into()).collect())
+    }
+
+    pub fn get_incoming(conn: &mut PgConnection, link_to: &Task) -> QueryResult<Vec<Self>> {
+        use crate::schema::task_links;
+        let links = task_links::table
+            .filter(task_links::dsl::task_to_id.eq(link_to.id))
+            .load::<TaskLinkData>(conn)?;
+        Ok(links.into_iter().map(|link| link.into()).collect())
+    }
 }
 
 #[cfg(test)]

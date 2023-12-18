@@ -2,14 +2,14 @@ use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
 
 mod flows;
-mod users;
+pub(crate) mod users;
 mod projects;
 mod sessions;
 mod tasks;
 
 pub use self::flows::{Flow, FlowAssignment, FlowNode, FlowConnection, FlowExit, Graph};
 pub use self::projects::Project;
-pub use self::tasks::{Task, Tag, TaskFlow};
+pub use self::tasks::{Task, Tag, TaskFlow, TaskLink, TaskLinkType, TaskUpdate};
 pub use self::sessions::Session;
 pub use self::users::User;
 

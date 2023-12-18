@@ -15,14 +15,53 @@ pub struct UserIdAccount {
     pub username: String,
 }
 
-#[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
-#[diesel(table_name = crate::schema::users)]
+#[derive(PartialEq, Clone, Debug, Serialize)]
 pub struct User {
+    pub id: Uuid,
+    pub email: String,
+    pub created: NaiveDateTime,
+}
+
+#[derive(PartialEq, Queryable, Insertable, Clone, Debug)]
+#[diesel(table_name = crate::schema::users)]
+pub(crate) struct UserData {
     pub id: Uuid,
     pub email: String,
     pub created: NaiveDateTime,
     pub salt: Option<Vec<u8>>,
     pub hash: Option<Vec<u8>>,
+}
+
+impl UserData {
+    pub fn from_username(conn: &mut PgConnection, username: &str) -> Option<Self> {
+        use crate::schema::users;
+        use crate::schema::user_id_accounts;
+        let (_account, user): (UserIdAccount, UserData) = user_id_accounts::table
+            .inner_join(users::table.on(users::id.eq(user_id_accounts::user_id)))
+            .filter(user_id_accounts::username.eq(username))
+            .first(conn)
+            .optional()
+            .ok()??;
+        Some(user)
+    }
+
+    pub fn from_email(conn: &mut PgConnection, email: &str) -> Option<Self> {
+        use crate::schema::users;
+        let user: UserData = users::table
+            .filter(users::email.eq(email))
+            .first(conn)
+            .optional()
+            .ok()??;
+        Some(user)
+    }
+
+
+}
+
+impl From<UserData> for User {
+    fn from(data: UserData) -> User {
+        User{id: data.id, email: data.email, created: data.created}
+    }
 }
 
 impl User {
@@ -68,7 +107,7 @@ impl User {
             (None, None)
         };
 
-        let user = User {
+        let user = UserData {
             id: Uuid::new_v4(),
             email: email.to_owned(),
             created: chrono::Utc::now().naive_utc(),
@@ -89,34 +128,38 @@ impl User {
                 .execute(conn)?;
         }
 
+        let user: User = user.into();
         sender.send(user.clone()).ok();
         Ok(user)
     }
 
-    pub fn from_username(conn: &mut PgConnection, username: &str) -> Option<Self> {
-        use crate::schema::users;
-        use crate::schema::user_id_accounts;
-        let (_account, user): (UserIdAccount, User) = user_id_accounts::table
-            .inner_join(users::table.on(users::id.eq(user_id_accounts::user_id)))
-            .filter(user_id_accounts::username.eq(username))
-            .first(conn)
+    pub fn get(conn: &mut PgConnection, id: Uuid) -> Option<Self> {
+        use crate::schema::users::dsl::users;
+        users
+            .find(id)
+            .get_result::<UserData>(conn)
             .optional()
-            .ok()??;
-        Some(user)
+            .ok()?
+            .map(|user| user.into())
     }
 
-    pub fn from_email(conn: &mut PgConnection, email: &str) -> Option<Self> {
-        use crate::schema::users;
-        let user = users::table
-            .filter(users::email.eq(email))
-            .first(conn)
-            .optional()
-            .ok()??;
-        Some(user)
+    pub fn list(conn: &mut PgConnection,
+                page: u32,
+                page_size: u32) -> Vec<Self> {
+        use crate::schema::users::dsl::users;
+        let offset = page.saturating_sub(1) * page_size;
+        match users
+                .limit(page_size as i64)
+                .offset(offset as i64)
+                .load::<UserData>(conn) {
+            Ok(list) => list.into_iter().map(|user| user.into()).collect(),
+            Err(err) => {
+                tracing::warn!("DB List Query Failed: {:?}", err);
+                vec![]
+            }
+        }
     }
 }
-
-crate::zini_table!(User, crate::schema::users::dsl::users);
 
 #[cfg(test)]
 mod test {

@@ -3,6 +3,7 @@ use tokio::sync::broadcast;
 use tracing_subscriber::{prelude::*, EnvFilter};
 use warp::Filter;
 
+use zini::api::tasks::TaskStatePayload;
 use zini::router::Router;
 use zini::tables::{establish_connection_pool, Project, User, Task, Flow, Graph};
 use zini::api::*;
@@ -98,6 +99,7 @@ async fn main() {
     let project_tx: broadcast::Sender<Project> = router.announce();
     let flow_tx: broadcast::Sender<Flow> = router.announce();
     let graph_tx: broadcast::Sender<Graph> = router.announce();
+    let task_update_tx: broadcast::Sender<TaskStatePayload> = router.announce();
 
     let log_requests = warp::log::custom(|info| {
         tracing::info!("{} {} {} {}",
@@ -111,7 +113,7 @@ async fn main() {
 
     let routes = users::routes(store.clone(), pool.clone(), user_tx)
         .or(projects::routes(store.clone(), pool.clone(), project_tx))
-        .or(tasks::routes(store.clone(), pool.clone(), task_tx))
+        .or(tasks::routes(store.clone(), pool.clone(), task_tx, task_update_tx))
         .or(flows::routes(store.clone(), pool.clone(), flow_tx, graph_tx))
         .or(sessions::routes(store.clone(), pool.clone()))
         .recover(handle_rejection)

@@ -7,7 +7,7 @@ use warp::{Filter, Rejection, Reply};
 use uuid::Uuid;
 
 use super::*;
-use crate::tables::{Session, User};
+use crate::tables::{Session, users::UserData};
 use crate::auth::{generate_random_token, to_base64, salt_and_hash};
 
 pub struct SessionStore {
@@ -46,11 +46,11 @@ impl AuthenticatedUser {
     pub fn authenticate(conn: &mut PgConnection, login_info: &LoginInfo) -> Option<Self> {
         let (user, password) = match login_info {
             LoginInfo::Basic{username, password} => {
-                (User::from_username(conn, username.as_str())?, password)
+                (UserData::from_username(conn, username.as_str())?, password)
                 
             }
             LoginInfo::Email{email, password} => {
-                (User::from_email(conn, email.as_str())?, password)
+                (UserData::from_email(conn, email.as_str())?, password)
             }
         };
 
