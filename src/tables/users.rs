@@ -15,11 +15,19 @@ pub struct UserIdAccount {
     pub username: String,
 }
 
-#[derive(PartialEq, Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct User {
     pub id: Uuid,
     pub email: String,
     pub created: NaiveDateTime,
+}
+
+impl PartialEq for User {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id &&
+            self.email == other.email &&
+            self.created.timestamp_micros() == other.created.timestamp_micros()
+    }
 }
 
 #[derive(PartialEq, Queryable, Insertable, Clone, Debug)]

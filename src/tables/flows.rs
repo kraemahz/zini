@@ -7,7 +7,7 @@ use uuid::Uuid;
 use super::*;
 
 
-#[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
+#[derive(Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::flows)]
 pub struct Flow {
     pub id: Uuid,
@@ -16,6 +16,17 @@ pub struct Flow {
     pub flow_name: String,
     pub description: String,
     pub entry_node_id: Uuid
+}
+
+impl PartialEq for Flow {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id &&
+            self.owner_id == other.owner_id &&
+            self.created.timestamp_micros() == other.created.timestamp_micros() &&
+            self.flow_name == other.flow_name &&
+            self.description == other.description &&
+            self.entry_node_id == other.entry_node_id
+    }
 }
 
 impl Flow {
@@ -205,9 +216,17 @@ impl FlowAssignment {
         where C: Connection<Backend = Pg>
     {
         let assignment = Self { flow_id, node_id: flow_node.id };
-        diesel::insert_into(crate::schema::flow_assignments::table)
+        match diesel::insert_into(crate::schema::flow_assignments::table)
             .values(&assignment)
-            .execute(conn)?;
+            .execute(conn) {
+            Err(diesel::result::Error::DatabaseError(
+                diesel::result::DatabaseErrorKind::UniqueViolation,
+                _
+            )) => {
+                Ok(0usize)  // Unique errors mean already inserted, this is fine.
+            }
+            other => other,
+        }?;
         Ok(())
     }
 }

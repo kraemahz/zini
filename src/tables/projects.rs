@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::{User, ValidationErrorMessage, Flow};
 
-#[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
+#[derive(Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::projects)]
 pub struct Project {
     pub id: Uuid,
@@ -16,6 +16,18 @@ pub struct Project {
     pub description: String,
     pub n_tasks: i32,
     pub default_flow_id: Uuid
+}
+
+impl PartialEq for Project {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id &&
+            self.name == other.name &&
+            self.owner_id == other.owner_id &&
+            self.created.timestamp_micros() == other.created.timestamp_micros() &&
+            self.description == other.description &&
+            self.n_tasks == other.n_tasks &&
+            self.default_flow_id == other.default_flow_id
+    }
 }
 
 impl Project {

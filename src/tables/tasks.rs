@@ -20,7 +20,7 @@ pub struct TaskProject {
 }
 
 
-#[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
+#[derive(Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::tasks)]
 pub struct Task {
     pub id: Uuid,
@@ -30,6 +30,18 @@ pub struct Task {
     pub description: String,
     pub author_id: Uuid,
     pub assignee_id: Option<Uuid>,
+}
+
+impl PartialEq for Task {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id &&
+            self.slug == other.slug &&
+            self.created.timestamp_micros() == other.created.timestamp_micros() &&
+            self.title == other.title &&
+            self.description == other.description &&
+            self.author_id == other.author_id &&
+            self.assignee_id == other.assignee_id
+    }
 }
 
 impl Task {
