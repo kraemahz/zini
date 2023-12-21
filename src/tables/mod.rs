@@ -13,8 +13,8 @@ pub use self::tasks::{Task, Tag, TaskFlow, TaskLink, TaskLinkType, TaskUpdate};
 pub use self::sessions::Session;
 pub use self::users::User;
 
-pub fn db_url(host: &str, password: &str, database: &str) -> String {
-    format!("postgres://postgres:{}@{}/{}", password, host, database)
+pub fn db_url(username: &str, host: &str, password: &str, database: &str) -> String {
+    format!("postgres://{}:{}@{}/{}", username, password, host, database)
 }
 
 pub type DbPool = Pool<ConnectionManager<PgConnection>>;
@@ -23,7 +23,7 @@ pub fn establish_connection_pool(database_url: &str) -> DbPool {
     let manager = ConnectionManager::<PgConnection>::new(database_url);
     Pool::builder()
         .build(manager)
-        .expect("Failed to create pool.")
+        .expect("Failed to create database connection.")
 }
 
 pub struct ValidationErrorMessage {
@@ -130,7 +130,7 @@ pub(self) mod harness {
 
     impl Drop for DbHarness {
         fn drop(&mut self) {
-            let url = db_url(&self.host, &self.password, "postgres");
+            let url = db_url("postgres", &self.host, &self.password, "postgres");
             let mut conn = PgConnection::establish(&url).expect("Cannot establish database connection");
 
             let disconnect_users = format!("SELECT pg_terminate_backend(pid)
@@ -151,12 +151,12 @@ pub(self) mod harness {
 
     impl DbHarness {
         pub fn new(host: &str, password: &str, database: &str) -> Self {
-            let url = db_url(host, password, "postgres");
+            let url = db_url("postgres", host, password, "postgres");
             let mut conn = PgConnection::establish(&url).expect("Cannot establish database connection");
             let query = diesel::sql_query(&format!("CREATE DATABASE {}", database));
             query.execute(&mut conn).expect(&format!("Creating {} failed", database));
 
-            let url = db_url(host, password, database);
+            let url = db_url("postgres", host, password, database);
             let mut db_conn = PgConnection::establish(&url).expect("Cannot establish database connection");
             run_migrations(&mut db_conn).expect("Migrations failed");
 
@@ -168,7 +168,7 @@ pub(self) mod harness {
         }
 
         pub fn conn(&self) -> PgConnection {
-            let url = db_url(&self.host, &self.password, &self.db_name);
+            let url = db_url("postgres", &self.host, &self.password, &self.db_name);
             PgConnection::establish(&url).expect("Cannot establish database connection")
         }
     }

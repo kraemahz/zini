@@ -39,3 +39,45 @@ use crate::tables::DbPool;
 pub fn with_db(pool: Arc<DbPool>) -> impl Filter<Extract = (Arc<DbPool>,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || pool.clone())
 }
+
+pub async fn handle_rejection(err: warp::reject::Rejection) -> Result<impl warp::Reply, std::convert::Infallible> {
+    if let Some(_) = err.find::<ConflictError>() {
+        let json = warp::reply::json(&"Conflict: Resource already exists");
+        let response = warp::reply::with_status(json, warp::http::StatusCode::CONFLICT);
+        return Ok(response);
+    }
+    if let Some(_) = err.find::<ParseError>() {
+        let json = warp::reply::json(&"Invalid parameter, parsing failed");
+        let response = warp::reply::with_status(json, warp::http::StatusCode::BAD_REQUEST);
+        return Ok(response);
+    }
+    if let Some(_) = err.find::<InvalidConfigurationError>() {
+        let json = warp::reply::json(&"Invalid configuration provided, cannot complete request");
+        let response = warp::reply::with_status(json, warp::http::StatusCode::BAD_REQUEST);
+        return Ok(response);
+    }
+    if let Some(_) = err.find::<NotFoundError>() {
+        let json = warp::reply::json(&"Not Found: Resource does not exist");
+        let response = warp::reply::with_status(json, warp::http::StatusCode::NOT_FOUND);
+        return Ok(response);
+    }
+    if let Some(_) = err.find::<InvalidSessionToken>() {
+        let json = warp::reply::json(&"Unauthorized");
+        let response = warp::reply::with_status(json, warp::http::StatusCode::UNAUTHORIZED);
+        return Ok(response);
+    }
+    if let Some(_) = err.find::<NoSessionToken>() {
+        let json = warp::reply::json(&"Unauthorized");
+        let response = warp::reply::with_status(json, warp::http::StatusCode::UNAUTHORIZED);
+        return Ok(response);
+    }
+    if let Some(db_err) = err.find::<DatabaseError>() {
+        tracing::error!("DB Error: {:?}", db_err);
+        let json = warp::reply::json(&"Database Error");
+        let response = warp::reply::with_status(json, warp::http::StatusCode::INTERNAL_SERVER_ERROR);
+        return Ok(response);
+    }
+    tracing::error!("Unhandled Error: {:?}", err);
+    let json = warp::reply::json(&"Unhandled error");
+    Ok(warp::reply::with_status(json, warp::http::StatusCode::INTERNAL_SERVER_ERROR))
+}

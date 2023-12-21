@@ -1,55 +1,15 @@
 use std::sync::Arc;
+use std::env;
+
 use tokio::sync::broadcast;
 use tracing_subscriber::{prelude::*, EnvFilter};
 use warp::Filter;
 
 use zini::api::tasks::TaskStatePayload;
 use zini::router::Router;
-use zini::tables::{establish_connection_pool, Project, User, Task, Flow, Graph};
+use zini::tables::{db_url, establish_connection_pool, Project, User, Task, Flow, Graph};
 use zini::api::*;
 
-
-async fn handle_rejection(err: warp::reject::Rejection) -> Result<impl warp::Reply, std::convert::Infallible> {
-    if let Some(_) = err.find::<ConflictError>() {
-        let json = warp::reply::json(&"Conflict: Resource already exists");
-        let response = warp::reply::with_status(json, warp::http::StatusCode::CONFLICT);
-        return Ok(response);
-    }
-    if let Some(_) = err.find::<ParseError>() {
-        let json = warp::reply::json(&"Invalid parameter, parsing failed");
-        let response = warp::reply::with_status(json, warp::http::StatusCode::BAD_REQUEST);
-        return Ok(response);
-    }
-    if let Some(_) = err.find::<InvalidConfigurationError>() {
-        let json = warp::reply::json(&"Invalid configuration provided, cannot complete request");
-        let response = warp::reply::with_status(json, warp::http::StatusCode::BAD_REQUEST);
-        return Ok(response);
-    }
-    if let Some(_) = err.find::<NotFoundError>() {
-        let json = warp::reply::json(&"Not Found: Resource does not exist");
-        let response = warp::reply::with_status(json, warp::http::StatusCode::NOT_FOUND);
-        return Ok(response);
-    }
-    if let Some(_) = err.find::<InvalidSessionToken>() {
-        let json = warp::reply::json(&"Unauthorized");
-        let response = warp::reply::with_status(json, warp::http::StatusCode::UNAUTHORIZED);
-        return Ok(response);
-    }
-    if let Some(_) = err.find::<NoSessionToken>() {
-        let json = warp::reply::json(&"Unauthorized");
-        let response = warp::reply::with_status(json, warp::http::StatusCode::UNAUTHORIZED);
-        return Ok(response);
-    }
-    if let Some(db_err) = err.find::<DatabaseError>() {
-        tracing::error!("DB Error: {:?}", db_err);
-        let json = warp::reply::json(&"Database Error");
-        let response = warp::reply::with_status(json, warp::http::StatusCode::INTERNAL_SERVER_ERROR);
-        return Ok(response);
-    }
-    tracing::error!("Unhandled Error: {:?}", err);
-    let json = warp::reply::json(&"Unhandled error");
-    Ok(warp::reply::with_status(json, warp::http::StatusCode::INTERNAL_SERVER_ERROR))
-}
 
 fn setup_tracing() {
     let tracing_layer = tracing_subscriber::fmt::layer()
@@ -84,8 +44,20 @@ fn setup_tracing() {
 #[tokio::main]
 async fn main() {
     setup_tracing();
-    let password = "development"; // TODO
-    let database_url = format!("postgres://postgres:{}@localhost/zini", password);
+    let default_password = "development".to_string();
+
+    let pg_username = env::var("PG_USERNAME").unwrap_or("postgres".to_string());
+    let pg_password = env::var("PG_PASSWORD").unwrap_or(default_password.clone());
+    let pg_host = env::var("PG_HOST").unwrap_or("localhost".to_string());
+
+    let prism_host = env::var("PRISM_HOST").unwrap_or("localhost".to_string());
+    let prism_port = env::var("PRISM_PORT").unwrap_or("5050".to_string());
+
+    if default_password == pg_password {
+        tracing::warn!("Zini is running in development mode with the default password.");
+    }
+    let database_url = db_url(&pg_username, &pg_host, &pg_password, "zini");
+    let prism_url = zini::events::prism_url(&prism_host, &prism_port);
 
     let pool = establish_connection_pool(&database_url);
     let pool = Arc::new(pool);
@@ -119,6 +91,6 @@ async fn main() {
         .recover(handle_rejection)
         .with(log_requests);
 
-    zini::events::emit_events("ws://127.0.0.1:5050", router);
+    zini::events::emit_events(&prism_url, router);
     warp::serve(routes).run(([127, 0, 0, 1], 8080)).await;
 }
