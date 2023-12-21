@@ -12,15 +12,15 @@ use zini::api::*;
 
 
 fn setup_tracing() {
-    let tracing_layer = tracing_subscriber::fmt::layer()
-        .compact()
-        .with_level(true)
-        .with_thread_ids(true)
-        .with_line_number(true)
-        .with_file(true);
-
     #[cfg(debug_assertions)]
     {
+        let tracing_layer = tracing_subscriber::fmt::layer()
+            .compact()
+            .with_level(true)
+            .with_thread_ids(true)
+            .with_line_number(true)
+            .with_file(true);
+
         let console_layer = console_subscriber::spawn();
         let filter_layer = EnvFilter::new("zini=debug");
         tracing_subscriber::registry()
@@ -31,6 +31,10 @@ fn setup_tracing() {
     }
     #[cfg(not(debug_assertions))]
     {
+        let tracing_layer = tracing_subscriber::fmt::layer()
+            .compact()
+            .with_level(true);
+
         let filter_layer = EnvFilter::new("zini=info");
         tracing_subscriber::registry()
             .with(filter_layer)
