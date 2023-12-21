@@ -1,3 +1,4 @@
+use std::time::Duration;
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
 
@@ -18,12 +19,16 @@ pub fn db_url(username: &str, host: &str, password: &str, database: &str) -> Str
 }
 
 pub type DbPool = Pool<ConnectionManager<PgConnection>>;
+const DB_TIMEOUT: Duration = Duration::from_secs(3);
 
-pub fn establish_connection_pool(database_url: &str) -> DbPool {
+pub async fn establish_connection_pool(database_url: &str) -> DbPool {
     let manager = ConnectionManager::<PgConnection>::new(database_url);
-    Pool::builder()
-        .build(manager)
-        .expect("Failed to create database connection.")
+    let pool_async = tokio::task::spawn_blocking(|| Pool::builder().build(manager));
+    match tokio::time::timeout(DB_TIMEOUT, pool_async).await {
+        Ok(Ok(pool)) => pool.expect("Could not establish database connection"),
+        Ok(Err(err)) => panic!("Database connection task failed: {:?}", err),
+        Err(_) => panic!("Database connection timed out after {} secs", DB_TIMEOUT.as_secs())
+    }
 }
 
 pub struct ValidationErrorMessage {

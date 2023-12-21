@@ -59,7 +59,7 @@ async fn main() {
     let database_url = db_url(&pg_username, &pg_host, &pg_password, "zini");
     let prism_url = zini::events::prism_url(&prism_host, &prism_port);
 
-    let pool = establish_connection_pool(&database_url);
+    let pool = establish_connection_pool(&database_url).await;
     let pool = Arc::new(pool);
 
     let store = SessionStore::new();

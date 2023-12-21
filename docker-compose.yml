@@ -6,6 +6,7 @@ services:
     image: postgres
     restart: always
     environment:
+      POSTGRES_DB: zini
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: development
     volumes:
