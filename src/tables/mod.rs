@@ -14,8 +14,14 @@ pub use self::tasks::{Task, Tag, TaskFlow, TaskLink, TaskLinkType, TaskUpdate};
 pub use self::sessions::Session;
 pub use self::users::User;
 
-pub fn db_url(username: &str, host: &str, password: &str, database: &str) -> String {
-    format!("postgres://{}:{}@{}/{}", username, password, host, database)
+pub fn db_url(username: &str, host: &str, password: &str, database: &str, ssl: bool) -> String {
+    let ssl_string = "?sslmode=require";
+    format!("postgres://{}:{}@{}/{}{}",
+            username,
+            password,
+            host,
+            database,
+            if ssl {ssl_string} else {""})
 }
 
 pub type DbPool = Pool<ConnectionManager<PgConnection>>;

@@ -53,6 +53,7 @@ async fn main() {
     let pg_username = env::var("PG_USERNAME").unwrap_or("postgres".to_string());
     let pg_password = env::var("PG_PASSWORD").unwrap_or(default_password.clone());
     let pg_host = env::var("PG_HOST").unwrap_or("localhost".to_string());
+    let pg_ssl = match env::var("PG_SSL") { Ok(_) => true, Err(_) => false };
 
     let prism_host = env::var("PRISM_HOST").unwrap_or("localhost".to_string());
     let prism_port = env::var("PRISM_PORT").unwrap_or("5050".to_string());
@@ -60,7 +61,7 @@ async fn main() {
     if default_password == pg_password {
         tracing::warn!("Zini is running in development mode with the default password.");
     }
-    let database_url = db_url(&pg_username, &pg_host, &pg_password, "zini");
+    let database_url = db_url(&pg_username, &pg_host, &pg_password, "zini", pg_ssl);
     let prism_url = zini::events::prism_url(&prism_host, &prism_port);
 
     let pool = establish_connection_pool(&database_url).await;
