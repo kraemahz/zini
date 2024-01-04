@@ -1,4 +1,5 @@
 use http::Uri;
+use prism_client::{AsyncClient, Wavelet};
 use tokio::spawn;
 use tokio::sync::broadcast;
 
@@ -8,6 +9,47 @@ use crate::tables::{Project, User, Task, Flow, Graph};
 
 pub fn prism_url(host: &str, port: &str) -> String {
     format!("ws://{}:{}", host, port)
+}
+
+const USER_CREATED_BEAM: &str = "urn:subseq.io:oidc:user:created";
+const USER_UPDATED_BEAM: &str = "urn:subseq.io:oidc:user:updated";
+const JOB_RESULT_BEAM: &str = "urn:subseq.io:builds:job:result";
+
+const TASK_CREATED_BEAM: &str = "urn:subseq.io:tasks::task:created";
+const TASK_UPDATED_BEAM: &str = "urn:subseq.io:tasks::task:updated";
+const TASK_ASSIGNEE_BEAM: &str = "urn:subseq.io:tasks::task:assignee::changed";
+const TASK_STATE_BEAM: &str = "urn:subseq.io:tasks::task:state:changed";
+
+const PROJECT_CREATED_BEAM: &str = "urn:subseq.io:tasts:project:created";
+const PROJECT_UPDATED_BEAM: &str = "urn:subseq.io:tasks:project:updated";
+
+const FLOW_CREATED_BEAM: &str = "urn:subseq.io:tasks:workflow:created";
+const FLOW_UPDATED_BEAM: &str = "urn:subseq.io:tasks:workflow:updated";
+
+
+async fn setup_user_beams(client: &mut AsyncClient) {
+    client.add_beam(USER_CREATED_BEAM).await.expect("Failed setting up client");
+    client.add_beam(USER_UPDATED_BEAM).await.expect("Failed setting up client");
+}
+
+
+async fn setup_task_beams(client: &mut AsyncClient) {
+    client.add_beam(TASK_CREATED_BEAM).await.expect("Failed setting up client");
+    client.add_beam(TASK_UPDATED_BEAM).await.expect("Failed setting up client");
+    client.add_beam(TASK_ASSIGNEE_BEAM).await.expect("Failed setting up client");
+    client.add_beam(TASK_STATE_BEAM).await.expect("Failed setting up client");
+}
+
+
+async fn setup_project_beams(client: &mut AsyncClient) {
+    client.add_beam(PROJECT_CREATED_BEAM).await.expect("Failed setting up client");
+    client.add_beam(PROJECT_UPDATED_BEAM).await.expect("Failed setting up client");
+}
+
+
+async fn setup_flow_beams(client: &mut AsyncClient) {
+    client.add_beam(FLOW_CREATED_BEAM).await.expect("Failed setting up client");
+    client.add_beam(FLOW_UPDATED_BEAM).await.expect("Failed setting up client");
 }
 
 
@@ -20,7 +62,11 @@ pub fn emit_events(addr: &str, mut router: Router) {
     let uri = addr.parse::<Uri>().unwrap();
 
     spawn(async move {
-        let mut client = match prism_client::Client::connect(uri).await {
+
+        async fn handle_tasks(_wavelet: Wavelet) {
+        }
+
+        let mut client = match AsyncClient::connect(uri, handle_tasks).await {
             Ok(client) => client,
             Err(_err) => {
                 tracing::warn!("Zini is running in standalone mode. No connection to prism.");
@@ -28,24 +74,17 @@ pub fn emit_events(addr: &str, mut router: Router) {
             }
         };
         tracing::info!("Zini connected to prism!");
-        let user_beam = "zini::user";
-        let task_beam = "zini::task";
-        let project_beam = "zini::project";
-        let flow_beam = "zini::flow";
-        let graph_beam = "zini::graph";
-
-        client.add_beam(user_beam).await.expect("Failed setting up client");
-        client.add_beam(task_beam).await.expect("Failed setting up client");
-        client.add_beam(project_beam).await.expect("Failed setting up client");
-        client.add_beam(flow_beam).await.expect("Failed setting up client");
-        client.add_beam(graph_beam).await.expect("Failed setting up client");
+        setup_user_beams(&mut client).await;
+        setup_task_beams(&mut client).await;
+        setup_project_beams(&mut client).await;
+        setup_flow_beams(&mut client).await;
 
         loop {
             tokio::select!(
                 msg = user_rx.recv() => {
                     if let Ok(msg) = msg {
                         let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit(user_beam, vec).await.is_err() {
+                        if client.emit(USER_CREATED_BEAM, vec).await.is_err() {
                             break;
                         }
                     }
@@ -53,7 +92,7 @@ pub fn emit_events(addr: &str, mut router: Router) {
                 msg = task_rx.recv() => {
                     if let Ok(msg) = msg {
                         let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit(task_beam, vec).await.is_err() {
+                        if client.emit(TASK_CREATED_BEAM, vec).await.is_err() {
                             break;
                         }
                     }
@@ -61,7 +100,7 @@ pub fn emit_events(addr: &str, mut router: Router) {
                 msg = project_rx.recv() => {
                     if let Ok(msg) = msg {
                         let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit(project_beam, vec).await.is_err() {
+                        if client.emit(PROJECT_CREATED_BEAM, vec).await.is_err() {
                             break;
                         }
                     }
@@ -69,7 +108,7 @@ pub fn emit_events(addr: &str, mut router: Router) {
                 msg = flow_rx.recv() => {
                     if let Ok(msg) = msg {
                         let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit(flow_beam, vec).await.is_err() {
+                        if client.emit(FLOW_CREATED_BEAM, vec).await.is_err() {
                             break;
                         }
                     }
@@ -77,7 +116,7 @@ pub fn emit_events(addr: &str, mut router: Router) {
                 msg = graph_rx.recv() => {
                     if let Ok(msg) = msg {
                         let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit(graph_beam, vec).await.is_err() {
+                        if client.emit(FLOW_UPDATED_BEAM, vec).await.is_err() {
                             break;
                         }
                     }
