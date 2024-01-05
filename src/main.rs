@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use std::env;
 
+use subseq_util::Router;
 use tokio::sync::broadcast;
 use tracing_subscriber::{prelude::*, EnvFilter};
 use warp::Filter;
 
 use zini::api::tasks::TaskStatePayload;
-use zini::router::Router;
 use zini::tables::{db_url, establish_connection_pool, Project, User, Task, Flow, Graph};
 use zini::api::*;
 

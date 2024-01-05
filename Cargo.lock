@@ -326,9 +326,9 @@ checksum = "06ea2b9bc92be3c2baa9334a323ebca2d6f074ff852cd1d7b11064035cd3868f"
 
 [[package]]
 name = "cpufeatures"
-version = "0.2.11"
+version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce420fe07aecd3e67c5f910618fe65e94158f6dcc0adf44e00d69ce2bdfe0fd0"
+checksum = "53fe5e26ff1b7aef8bca9c6080520cfb8d9333c7568e1829cef191a9723e5504"
 dependencies = [
  "libc",
 ]
@@ -1140,8 +1140,8 @@ dependencies = [
 
 [[package]]
 name = "prism_client"
-version = "0.1.0"
-source = "git+https://github.com/kraemahz/prism.git?branch=main#72a555a36e69080fa4599c4a5aee09a3571910c7"
+version = "0.1.1"
+source = "git+https://github.com/kraemahz/prism.git?branch=main#1cfedafe712ef3dec135bb5d69fa6a71d15727dd"
 dependencies = [
  "bytes 1.5.0",
  "capnp",
@@ -1161,7 +1161,7 @@ dependencies = [
 [[package]]
 name = "prism_schema"
 version = "0.1.0"
-source = "git+https://github.com/kraemahz/prism.git?branch=main#72a555a36e69080fa4599c4a5aee09a3571910c7"
+source = "git+https://github.com/kraemahz/prism.git?branch=main#1cfedafe712ef3dec135bb5d69fa6a71d15727dd"
 dependencies = [
  "capnp",
  "capnpc",
@@ -1508,9 +1508,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.110"
+version = "1.0.111"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fbd975230bada99c8bb618e0c365c2eefa219158d5c6c29610fd09ff1833257"
+checksum = "176e46fa42316f18edd598015a5166857fc835ec732f5215eac6b7bdbf0a84f4"
 dependencies = [
  "itoa",
  "ryu",
@@ -1616,6 +1616,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
+name = "subseq_util"
+version = "0.1.0"
+source = "git+https://github.com/kraemahz/subseq_util.git?branch=main#7fe8bc5ff33da8a6fb1d2713ab35bc32744b7747"
+dependencies = [
+ "anymap",
+ "diesel",
+ "tokio",
+]
+
+[[package]]
 name = "subtle"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1623,9 +1633,9 @@ checksum = "81cdd64d312baedb58e21336b31bc043b77e01cc99033ce76ef539f78e965ebc"
 
 [[package]]
 name = "syn"
-version = "2.0.47"
+version = "2.0.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1726efe18f42ae774cc644f330953a5e7b3c3003d3edcecf18850fe9d4dd9afb"
+checksum = "0f3531638e407dfc0814761abb7c00a5b54992b849452a0646b7f65c9f770f3f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2374,6 +2384,7 @@ dependencies = [
  "scrypt",
  "serde",
  "serde_json",
+ "subseq_util",
  "tokio",
  "tracing",
  "tracing-subscriber",

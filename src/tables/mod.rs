@@ -1,7 +1,3 @@
-use std::time::Duration;
-use diesel::pg::PgConnection;
-use diesel::r2d2::{ConnectionManager, Pool};
-
 mod flows;
 pub(crate) mod users;
 mod projects;
@@ -14,58 +10,12 @@ pub use self::tasks::{Task, Tag, TaskFlow, TaskLink, TaskLinkType, TaskUpdate};
 pub use self::sessions::Session;
 pub use self::users::User;
 
-pub fn db_url(username: &str, host: &str, password: &str, database: &str, ssl: bool) -> String {
-    let ssl_string = "?sslmode=require";
-    format!("postgres://{}:{}@{}/{}{}",
-            username,
-            password,
-            host,
-            database,
-            if ssl {ssl_string} else {""})
-}
-
-pub type DbPool = Pool<ConnectionManager<PgConnection>>;
-const DB_TIMEOUT: Duration = Duration::from_secs(3);
-
-pub async fn establish_connection_pool(database_url: &str) -> DbPool {
-    let manager = ConnectionManager::<PgConnection>::new(database_url);
-    let pool_async = tokio::task::spawn_blocking(|| Pool::builder().build(manager));
-    match tokio::time::timeout(DB_TIMEOUT, pool_async).await {
-        Ok(Ok(pool)) => pool.expect("Could not establish database connection"),
-        Ok(Err(err)) => panic!("Database connection task failed: {:?}", err),
-        Err(_) => panic!("Database connection timed out after {} secs", DB_TIMEOUT.as_secs())
-    }
-}
-
-pub struct ValidationErrorMessage {
-    pub message: String,
-    pub column: String,
-    pub constraint_name: String
-}
-
-impl diesel::result::DatabaseErrorInformation for ValidationErrorMessage {
-    fn message(&self) -> &str {
-        &self.message
-    }
-    fn details(&self) -> Option<&str> {
-        None
-    }
-    fn hint(&self) -> Option<&str> {
-        None
-    }
-    fn table_name(&self) -> Option<&str> {
-        None
-    }
-    fn column_name(&self) -> Option<&str> {
-        Some(&self.column)
-    }
-    fn constraint_name(&self) -> Option<&str> {
-        Some(&self.constraint_name)
-    }
-    fn statement_position(&self) -> Option<i32> {
-        None
-    }
-}
+pub use subseq_util::database::{
+    DbPool,
+    ValidationErrorMessage,
+    db_url,
+    establish_connection_pool,
+};
 
 #[macro_export]
 macro_rules! zini_table {
@@ -100,6 +50,8 @@ pub(self) mod harness {
     use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
     use diesel::prelude::*;
     use diesel::pg::Pg;
+    use diesel::pg::PgConnection;
+
     pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations/");
 
     pub fn to_pg_db_name(name: &str) -> String {
@@ -141,7 +93,7 @@ pub(self) mod harness {
 
     impl Drop for DbHarness {
         fn drop(&mut self) {
-            let url = db_url("postgres", &self.host, &self.password, "postgres");
+            let url = db_url("postgres", &self.host, &self.password, "postgres", false);
             let mut conn = PgConnection::establish(&url).expect("Cannot establish database connection");
 
             let disconnect_users = format!("SELECT pg_terminate_backend(pid)
@@ -162,12 +114,12 @@ pub(self) mod harness {
 
     impl DbHarness {
         pub fn new(host: &str, password: &str, database: &str) -> Self {
-            let url = db_url("postgres", host, password, "postgres");
+            let url = db_url("postgres", host, password, "postgres", false);
             let mut conn = PgConnection::establish(&url).expect("Cannot establish database connection");
             let query = diesel::sql_query(&format!("CREATE DATABASE {}", database));
             query.execute(&mut conn).expect(&format!("Creating {} failed", database));
 
-            let url = db_url("postgres", host, password, database);
+            let url = db_url("postgres", host, password, database, false);
             let mut db_conn = PgConnection::establish(&url).expect("Cannot establish database connection");
             run_migrations(&mut db_conn).expect("Migrations failed");
 
@@ -179,7 +131,7 @@ pub(self) mod harness {
         }
 
         pub fn conn(&self) -> PgConnection {
-            let url = db_url("postgres", &self.host, &self.password, &self.db_name);
+            let url = db_url("postgres", &self.host, &self.password, &self.db_name, false);
             PgConnection::establish(&url).expect("Cannot establish database connection")
         }
     }

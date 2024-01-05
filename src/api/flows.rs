@@ -8,7 +8,6 @@ use uuid::Uuid;
 use warp::{Filter, Reply, Rejection};
 
 use super::*;
-use crate::router::with_broadcast;
 use crate::tables::*;
 use super::sessions::{AuthenticatedUser, SessionStore, authenticate};
 

@@ -4,7 +4,6 @@ use tokio::sync::broadcast;
 use warp::{Filter, Reply, Rejection};
 
 use super::*;
-use crate::router::with_broadcast;
 use crate::tables::{DbPool, User};
 
 #[derive(Deserialize)]

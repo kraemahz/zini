@@ -7,7 +7,6 @@ use warp::{Reply, Rejection};
 use uuid::Uuid;
 
 use super::*;
-use crate::router::with_broadcast;
 use crate::tables::{DbPool, Project, User, Flow};
 
 #[derive(Deserialize)]

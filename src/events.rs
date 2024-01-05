@@ -1,9 +1,9 @@
 use http::Uri;
 use prism_client::{AsyncClient, Wavelet};
+use subseq_util::Router;
 use tokio::spawn;
 use tokio::sync::broadcast;
 
-use crate::router::Router;
 use crate::tables::{Project, User, Task, Flow, Graph};
 
 

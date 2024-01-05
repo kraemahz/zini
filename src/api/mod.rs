@@ -1,5 +1,8 @@
+use std::convert::Infallible;
 use std::sync::Arc;
+
 use warp::Filter;
+use tokio::sync::broadcast;
 
 pub mod flows;
 pub mod users;
@@ -38,6 +41,12 @@ impl warp::reject::Reject for InvalidConfigurationError {}
 use crate::tables::DbPool;
 pub fn with_db(pool: Arc<DbPool>) -> impl Filter<Extract = (Arc<DbPool>,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || pool.clone())
+}
+
+
+pub fn with_broadcast<M: Send + Sync + Clone + 'static>(sender: broadcast::Sender<M>) -> 
+        impl Filter<Extract = (broadcast::Sender<M>,), Error = Infallible> + Clone {
+    warp::any().map(move || sender.clone())
 }
 
 pub async fn handle_rejection(err: warp::reject::Rejection) -> Result<impl warp::Reply, std::convert::Infallible> {
