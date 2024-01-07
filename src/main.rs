@@ -1,74 +1,50 @@
 use std::sync::Arc;
 use std::env;
 
-use subseq_util::Router;
+use subseq_util::{
+    Router,
+    tracing::setup_tracing,
+    tables::{establish_connection_pool, PgVars, User},
+    api::{users, sessions, handle_rejection}, oidc::{IdentityProvider, OidcCredentials}
+};
 use tokio::sync::broadcast;
-use tracing_subscriber::{prelude::*, EnvFilter};
 use warp::Filter;
+use warp_sessions::MemoryStore;
 
 use zini::api::tasks::TaskStatePayload;
-use zini::tables::{db_url, establish_connection_pool, Project, User, Task, Flow, Graph};
+use zini::tables::{Project, Task, Flow, Graph};
 use zini::api::*;
 
 
-fn setup_tracing() {
-    #[cfg(debug_assertions)]
-    {
-        let tracing_layer = tracing_subscriber::fmt::layer()
-            .compact()
-            .with_level(true)
-            .with_thread_ids(true)
-            .with_line_number(true)
-            .with_file(true);
-
-        let console_layer = console_subscriber::spawn();
-        let filter_layer = EnvFilter::new("zini=debug");
-        tracing_subscriber::registry()
-            .with(filter_layer)
-            .with(console_layer)
-            .with(tracing_layer)
-            .init();
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        let tracing_layer = tracing_subscriber::fmt::layer()
-            .compact()
-            .with_level(true);
-
-        let filter_layer = EnvFilter::new("zini=info");
-        tracing_subscriber::registry()
-            .with(filter_layer)
-            .with(tracing_layer)
-            .init();
-    }
-
-    tracing::info!("Zini started");
-}
-
 #[tokio::main]
 async fn main() {
-    setup_tracing();
-    let default_password = "development".to_string();
-
-    let pg_username = env::var("PG_USERNAME").unwrap_or("postgres".to_string());
-    let pg_password = env::var("PG_PASSWORD").unwrap_or(default_password.clone());
-    let pg_host = env::var("PG_HOST").unwrap_or("localhost".to_string());
-    let pg_ssl = match env::var("PG_SSL") { Ok(_) => true, Err(_) => false };
+    setup_tracing("zini");
+    let default_password = "development";
+    let pg_vars = PgVars::new(default_password);
 
     let prism_host = env::var("PRISM_HOST").unwrap_or("localhost".to_string());
     let prism_port = env::var("PRISM_PORT").unwrap_or("5050".to_string());
 
-    if default_password == pg_password {
-        tracing::warn!("Zini is running in development mode with the default password.");
-    }
-    let database_url = db_url(&pg_username, &pg_host, &pg_password, "zini", pg_ssl);
+    let oidc_provider = env::var("OIDC_IDP_URL")
+        .unwrap_or("https://localhost".to_string());
+    let oidc_client_id = env::var("OIDC_CLIENT_ID")
+        .unwrap_or("zini-tasks".to_string());
+    let oidc_client_secret = env::var("OIDC_CLIENT_SECRET")
+        .unwrap_or("".to_string());
+    let redirect_url = "/sessions/auth";
+
+    let database_url = pg_vars.db_url("zini");
     let prism_url = zini::events::prism_url(&prism_host, &prism_port);
 
     let pool = establish_connection_pool(&database_url).await;
     let pool = Arc::new(pool);
 
-    let store = SessionStore::new();
-    let store = Arc::new(store);
+    let oidc = OidcCredentials::new(oidc_client_id, oidc_client_secret, redirect_url)
+        .expect("Invalid OIDC Credentials");
+    let idp = IdentityProvider::new(&oidc, &oidc_provider).await
+        .expect("Failed to establish Identity Provider connection");
+    let idp = Arc::new(idp);
+    let session = MemoryStore::new();
 
     let mut router = Router::new();
     let user_tx: broadcast::Sender<User> = router.announce();
@@ -88,11 +64,11 @@ async fn main() {
                        info.status());
     });
 
-    let routes = users::routes(store.clone(), pool.clone(), user_tx)
-        .or(projects::routes(store.clone(), pool.clone(), project_tx))
-        .or(tasks::routes(store.clone(), pool.clone(), task_tx, task_update_tx))
-        .or(flows::routes(store.clone(), pool.clone(), flow_tx, graph_tx))
-        .or(sessions::routes(store.clone(), pool.clone()))
+    let routes = projects::routes(idp.clone(), pool.clone(), project_tx)
+        .or(users::routes(pool.clone(), user_tx))
+        .or(tasks::routes(idp.clone(), pool.clone(), task_tx, task_update_tx))
+        .or(flows::routes(idp.clone(), pool.clone(), flow_tx, graph_tx))
+        .or(sessions::routes(session.clone(), idp.clone()))
         .recover(handle_rejection)
         .with(log_requests);
 

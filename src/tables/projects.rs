@@ -3,8 +3,9 @@ use diesel::prelude::*;
 use serde::Serialize;
 use tokio::sync::broadcast;
 use uuid::Uuid;
+use subseq_util::tables::ValidationErrorMessage;
 
-use super::{User, ValidationErrorMessage, Flow};
+use super::{Flow, User};
 
 #[derive(Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::projects)]

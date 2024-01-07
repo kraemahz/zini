@@ -6,10 +6,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::api::AuthenticatedUser;
-
+use subseq_util::api::AuthenticatedUser;
 use super::{Flow, FlowNode, ValidationErrorMessage, Project, User, FlowConnection};
-use super::users::UserData;
 
 
 #[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
@@ -194,7 +192,7 @@ impl Task {
             .inner_join(users::table)
             .filter(task_watchers::task_id.eq(&self.id))
             .select(users::all_columns)
-            .load::<UserData>(conn)?;
+            .load::<User>(conn)?;
         Ok(users.into_iter().map(|user| user.into()).collect())
     }
 

@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 use warp::{Filter, Reply, Rejection};
+use subseq_util::api::*;
+use subseq_util::oidc::IdentityProvider;
 
-use super::*;
 use crate::tables::{
     DbPool,
     FlowConnection,
@@ -175,13 +176,13 @@ async fn filter_tasks_handler(payload: QueryPayload,
 }
 
 
-pub fn routes(store: Arc<SessionStore>,
+pub fn routes(idp: Arc<IdentityProvider>,
               pool: Arc<DbPool>,
               task_tx: broadcast::Sender<Task>,
               task_update_tx: broadcast::Sender<TaskStatePayload>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     let create_task = warp::post()
         .and(warp::body::json())
-        .and(authenticate(store.clone()))
+        .and(authenticate(idp.clone()))
         .and(with_db(pool.clone()))
         .and(with_broadcast(task_tx))
         .and_then(create_task_handler);
@@ -189,21 +190,21 @@ pub fn routes(store: Arc<SessionStore>,
     let update_task = warp::put()
         .and(warp::path::param())
         .and(warp::body::json())
-        .and(authenticate(store.clone()))
+        .and(authenticate(idp.clone()))
         .and(with_db(pool.clone()))
         .and(with_broadcast(task_update_tx))
         .and_then(update_task_handler);
 
     let get_task = warp::get()
         .and(warp::path::param())
-        .and(authenticate(store.clone()))
+        .and(authenticate(idp.clone()))
         .and(with_db(pool.clone()))
         .and_then(get_task_handler);
 
     let filter_tasks = warp::path("query")
         .and(warp::post())
         .and(warp::body::json())
-        .and(authenticate(store.clone()))
+        .and(authenticate(idp.clone()))
         .and(with_db(pool.clone()))
         .and_then(filter_tasks_handler);
 

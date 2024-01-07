@@ -1,10 +1,10 @@
 use http::Uri;
 use prism_client::{AsyncClient, Wavelet};
-use subseq_util::Router;
 use tokio::spawn;
 use tokio::sync::broadcast;
+use subseq_util::router::Router;
 
-use crate::tables::{Project, User, Task, Flow, Graph};
+use crate::tables::{Project, Task, Flow, Graph, User};
 
 
 pub fn prism_url(host: &str, port: &str) -> String {

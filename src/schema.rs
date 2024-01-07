@@ -1,5 +1,3 @@
-// @generated automatically by Diesel CLI.
-
 diesel::table! {
     default_project_tags (project_id, tag_name) {
         project_id -> Uuid,
@@ -66,13 +64,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    sessions (user_id) {
-        user_id -> Uuid,
-        token -> Bytea,
-    }
-}
-
-diesel::table! {
     tags (name) {
         name -> Varchar,
     }
@@ -128,22 +119,24 @@ diesel::table! {
     }
 }
 
-diesel::table! {
-    user_id_accounts (user_id, username) {
-        user_id -> Uuid,
-        username -> Varchar,
+pub mod auth {
+    diesel::table! {
+        auth.user_id_accounts (user_id, username) {
+            user_id -> Uuid,
+            username -> Varchar,
+        }
     }
-}
 
-diesel::table! {
-    users (id) {
-        id -> Uuid,
-        email -> Varchar,
-        created -> Timestamp,
-        salt -> Nullable<Bytea>,
-        hash -> Nullable<Bytea>,
+    diesel::table! {
+        auth.users (id) {
+            id -> Uuid,
+            email -> Varchar,
+            created -> Timestamp,
+        }
     }
 }
+pub use auth::{users, user_id_accounts};
+
 
 diesel::joinable!(default_project_tags -> projects (project_id));
 diesel::joinable!(default_project_tags -> tags (tag_name));
@@ -154,7 +147,6 @@ diesel::joinable!(flow_exits -> flows (flow_id));
 diesel::joinable!(flows -> flow_nodes (entry_node_id));
 diesel::joinable!(flows -> users (owner_id));
 diesel::joinable!(projects -> users (owner_id));
-diesel::joinable!(sessions -> users (user_id));
 diesel::joinable!(task_flows -> flow_nodes (current_node_id));
 diesel::joinable!(task_flows -> flows (flow_id));
 diesel::joinable!(task_flows -> tasks (task_id));
@@ -176,7 +168,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     flows,
     link_types,
     projects,
-    sessions,
     tags,
     task_flows,
     task_links,
