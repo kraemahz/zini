@@ -1,9 +1,11 @@
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use http::Uri;
 use futures::Future;
 use prism_client::{AsyncClient, Wavelet};
+use subseq_util::tables::DbPool;
 use tokio::spawn;
 use tokio::sync::broadcast;
 use subseq_util::router::Router;
@@ -15,7 +17,7 @@ use crate::{
 };
 
 
-pub fn prism_url(host: &str, port: &str) -> String {
+pub fn prism_url(host: &str, port: u16) -> String {
     format!("ws://{}:{}", host, port)
 }
 
@@ -62,9 +64,30 @@ async fn setup_flow_beams(client: &mut AsyncClient) {
     client.add_beam(FLOW_UPDATED_BEAM).await.expect("Failed setting up client");
 }
 
+#[derive(Clone)]
+pub struct UserCreated(pub User);
+
+pub fn create_users_from_events(mut user_created_rx: broadcast::Receiver<UserCreated>,
+                                db_pool: Arc<DbPool>) {
+    spawn(async move {
+        while let Ok(created_user) = user_created_rx.recv().await {
+            let mut conn = match db_pool.get() {
+                Ok(conn) => conn,
+                Err(_) => return
+            };
+            let user = created_user.0;
+            if User::get(&mut conn, user.id).is_none() {
+                User::create(&mut conn, user.id, &user.email, None).ok();
+            }
+        }
+    });
+}
+
+
 struct WaveletHandler {
     job_result_tx: broadcast::Sender<JobResult>,
     job_created_tx: broadcast::Sender<Job>,
+    user_created_tx: broadcast::Sender<UserCreated>,
     wavelet: Wavelet,
 }
 
@@ -98,6 +121,18 @@ impl Future for WaveletHandler {
                     this.job_created_tx.send(result).ok();
                 }
             }
+            USER_CREATED_BEAM => {
+                for photon in photons {
+                    let result: User = match serde_json::from_slice(&photon.payload) {
+                        Ok(ok) => ok,
+                        Err(_) => {
+                            tracing::error!("Received invalid Photon on {}", JOB_RESULT_BEAM);
+                            continue;
+                        }
+                    };
+                    this.user_created_tx.send(UserCreated(result)).ok();
+                }
+            }
             b => {
                 tracing::error!("Received unhandled Beam: {}", b);
             }
@@ -108,7 +143,7 @@ impl Future for WaveletHandler {
 }
 
 
-pub fn emit_events(addr: &str, mut router: Router) {
+pub fn emit_events(addr: &str, mut router: Router, db_pool: Arc<DbPool>) {
     let mut user_rx: broadcast::Receiver<User> = router.subscribe();
     let mut task_rx: broadcast::Receiver<Task> = router.subscribe();
     let mut task_update_rx: broadcast::Receiver<TaskStatePayload> = router.subscribe();
@@ -119,6 +154,10 @@ pub fn emit_events(addr: &str, mut router: Router) {
 
     let job_tx: broadcast::Sender<Job> = router.announce();
     let job_result_tx: broadcast::Sender<JobResult> = router.announce();
+    let user_created_tx: broadcast::Sender<UserCreated> = router.announce();
+
+    let user_created_rx: broadcast::Receiver<UserCreated> = router.subscribe();
+    create_users_from_events(user_created_rx, db_pool);
 
     let uri = addr.parse::<Uri>().unwrap();
 
@@ -127,6 +166,7 @@ pub fn emit_events(addr: &str, mut router: Router) {
             WaveletHandler {
                 job_result_tx: job_result_tx.clone(),
                 job_created_tx: job_tx.clone(),
+                user_created_tx: user_created_tx.clone(),
                 wavelet
             }
         };

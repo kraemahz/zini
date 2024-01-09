@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+
 use diesel::{PgConnection, QueryResult};
 use serde::{Deserialize, Serialize};
+use subseq_util::api::*;
+use subseq_util::oidc::IdentityProvider;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 use warp::{Filter, Reply, Rejection};
-use subseq_util::api::*;
-use subseq_util::oidc::IdentityProvider;
+use warp_sessions::MemoryStore;
 
 use crate::tables::{
     DbPool,
@@ -177,12 +179,13 @@ async fn filter_tasks_handler(payload: QueryPayload,
 
 
 pub fn routes(idp: Arc<IdentityProvider>,
+              session: MemoryStore,
               pool: Arc<DbPool>,
               task_tx: broadcast::Sender<Task>,
               task_update_tx: broadcast::Sender<TaskStatePayload>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     let create_task = warp::post()
         .and(warp::body::json())
-        .and(authenticate(idp.clone()))
+        .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and(with_broadcast(task_tx))
         .and_then(create_task_handler);
@@ -190,21 +193,21 @@ pub fn routes(idp: Arc<IdentityProvider>,
     let update_task = warp::put()
         .and(warp::path::param())
         .and(warp::body::json())
-        .and(authenticate(idp.clone()))
+        .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and(with_broadcast(task_update_tx))
         .and_then(update_task_handler);
 
     let get_task = warp::get()
         .and(warp::path::param())
-        .and(authenticate(idp.clone()))
+        .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and_then(get_task_handler);
 
     let filter_tasks = warp::path("query")
         .and(warp::post())
         .and(warp::body::json())
-        .and(authenticate(idp.clone()))
+        .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and_then(filter_tasks_handler);
 

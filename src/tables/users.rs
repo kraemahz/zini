@@ -1,7 +1,6 @@
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 use chrono::NaiveDateTime;
-use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use subseq_util::tables::ValidationErrorMessage;
@@ -62,7 +61,7 @@ impl User {
     }
 
     pub fn create(conn: &mut PgConnection,
-                  sender: &mut broadcast::Sender<Self>,
+                  user_id: Uuid,
                   email: &str,
                   username: Option<&str>) -> QueryResult<Self> {
 
@@ -77,7 +76,7 @@ impl User {
         }
 
         let user = User {
-            id: Uuid::new_v4(),
+            id: user_id,
             email: email.to_owned(),
             created: chrono::Utc::now().naive_utc()
         };
@@ -96,7 +95,6 @@ impl User {
         }
 
         let user: User = user.into();
-        sender.send(user.clone()).ok();
         Ok(user)
     }
 
@@ -140,12 +138,11 @@ mod test {
         let db_name = to_pg_db_name(function_name!());
         let harness = DbHarness::new("localhost", "development", &db_name);
         let mut conn = harness.conn(); 
-        let (mut tx, _) = broadcast::channel(1);
-        let user = User::create(&mut conn, &mut tx, "test@example.com", Some("test_user"), Some("password")).expect("user");
+        let user = User::create(&mut conn, &mut tx, Uuid::new_v4(), "test@example.com", Some("test_user")).expect("user");
         let user2 = User::get(&mut conn, user.id).expect("user2");
         assert_eq!(user, user2);
 
-        assert!(User::create(&mut conn, &mut tx, "bad_user@example.com", Some("2bad_user"), None).is_err());
-        assert!(User::create(&mut conn, &mut tx, "bad_email", Some("bad_user"), None).is_err());
+        assert!(User::create(&mut conn, Uuid::new_v4(), "bad_user@example.com", Some("2bad_user")).is_err());
+        assert!(User::create(&mut conn, Uuid::new_v4(), "bad_email", Some("bad_user")).is_err());
     }
 }

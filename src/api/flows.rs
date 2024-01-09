@@ -1,13 +1,15 @@
+use std::sync::Arc;
+
 use diesel::connection::{Connection, LoadConnection};
 use diesel::pg::Pg;
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use subseq_util::api::*;
 use subseq_util::oidc::IdentityProvider;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 use warp::{Filter, Reply, Rejection};
+use warp_sessions::MemoryStore;
 
 use crate::tables::*;
 
@@ -223,12 +225,13 @@ async fn update_flow_graph_handler(
 
 // Add the route for creating a flow to your routes function
 pub fn routes(idp: Arc<IdentityProvider>,
+              session: MemoryStore,
               pool: Arc<DbPool>,
               flow_tx: broadcast::Sender<Flow>,
               graph_tx: broadcast::Sender<Graph>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     let create_flow = warp::post()
         .and(warp::body::json())
-        .and(authenticate(idp.clone()))
+        .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and(with_broadcast(flow_tx))
         .and_then(create_flow_handler);
@@ -236,20 +239,20 @@ pub fn routes(idp: Arc<IdentityProvider>,
     let list_flows = warp::path("list")
         .and(warp::path::param())
         .and(warp::get())
-        .and(authenticate(idp.clone()))
+        .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and_then(list_flows_handler);
 
     let get_flow_graph = warp::get()
         .and(warp::path::param())
-        .and(authenticate(idp.clone()))
+        .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and_then(get_flow_graph_handler);
 
     let update_flow_graph = warp::put()
         .and(warp::path("graph"))
         .and(warp::body::json())
-        .and(authenticate(idp.clone()))
+        .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and(with_broadcast(graph_tx))
         .and_then(update_flow_graph_handler);

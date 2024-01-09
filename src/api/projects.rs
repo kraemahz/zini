@@ -5,8 +5,9 @@ use serde::Deserialize;
 use subseq_util::api::*;
 use subseq_util::oidc::IdentityProvider;
 use tokio::sync::broadcast;
-use warp::{Reply, Rejection, Filter};
 use uuid::Uuid;
+use warp::{Reply, Rejection, Filter};
+use warp_sessions::MemoryStore;
 
 use crate::tables::{DbPool, Project, Flow, User};
 
@@ -89,11 +90,12 @@ pub async fn get_project_handler(project_id: String,
 }
 
 pub fn routes(idp: Arc<IdentityProvider>,
+              session: MemoryStore,
               pool: Arc<DbPool>,
               project_tx: broadcast::Sender<Project>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     let create_project = warp::post()
         .and(warp::body::json())
-        .and(authenticate(idp.clone()))
+        .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and(with_broadcast(project_tx))
         .and_then(create_project_handler);
@@ -101,13 +103,13 @@ pub fn routes(idp: Arc<IdentityProvider>,
     let list_projects = warp::path("list")
         .and(warp::get())
         .and(warp::path::param())
-        .and(authenticate(idp.clone()))
+        .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and_then(list_projects_handler);
 
     let get_project = warp::get()
         .and(warp::path::param())
-        .and(authenticate(idp.clone()))
+        .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and_then(get_project_handler);
 
