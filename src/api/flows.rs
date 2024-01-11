@@ -6,6 +6,7 @@ use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 use subseq_util::api::*;
 use subseq_util::oidc::IdentityProvider;
+use subseq_util::tables::DbPool;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 use warp::{Filter, Reply, Rejection};
@@ -57,7 +58,7 @@ async fn create_flow_handler(
     payload: NewFlowPayload,
     auth: AuthenticatedUser,
     db_pool: Arc<DbPool>,
-    mut sender: broadcast::Sender<Flow>
+    sender: broadcast::Sender<Flow>
 ) -> Result<impl Reply, Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
@@ -107,7 +108,6 @@ async fn create_flow_handler(
 
     let flow = match Flow::create(
         &mut conn,
-        &mut sender,
         &user,
         flow_name,
         description.unwrap_or_else(String::new),
@@ -118,6 +118,7 @@ async fn create_flow_handler(
         Ok(flow) => flow,
         Err(_) => return Err(warp::reject::custom(ConflictError{}))
     };
+    sender.send(flow.clone()).ok();
 
     // Create a response with the created flow details
     let reply = warp::reply::json(&flow);

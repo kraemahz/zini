@@ -1,7 +1,6 @@
 use chrono::NaiveDateTime;
 use diesel::{prelude::*, pg::Pg, connection::LoadConnection};
 use serde::Serialize;
-use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use super::*;
@@ -31,7 +30,6 @@ impl PartialEq for Flow {
 
 impl Flow {
     pub fn create<C>(conn: &mut C,
-                     sender: &mut broadcast::Sender<Self>,
                      author: &User,
                      flow_name: String,
                      description: String,
@@ -69,8 +67,6 @@ impl Flow {
             .execute(conn)?;
         FlowConnection::connect_all(conn, flow.id, graph)?;
         FlowExit::create_exits(conn, flow.id, exits)?;
-        
-        sender.send(flow.clone()).ok();
         Ok(flow)
     }
 
@@ -332,14 +328,13 @@ mod test {
         let harness = DbHarness::new("localhost", "development", &db_name);
         let mut conn = harness.conn(); 
         let (mut tx, _) = broadcast::channel(1);
-        let (mut user_tx, _) = broadcast::channel(1);
 
         let entry_node = FlowNode::create(&mut conn, "Open").expect("entry");
         let exit_node = FlowNode::create(&mut conn, "Closed").expect("entry");
         let graph = vec![(&entry_node, &exit_node)];
         let exits = vec![&exit_node];
 
-        let user = User::create(&mut conn, &mut user_tx, "test@example.com", None, None).expect("user");
+        let user = User::create(&mut conn, Uuid::new_v4(), "test@example.com", None).expect("user");
         let flow = Flow::create(&mut conn,
                                 &mut tx,
                                 &user,

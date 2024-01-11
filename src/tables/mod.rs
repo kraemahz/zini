@@ -38,8 +38,7 @@ macro_rules! zini_table {
 
 #[cfg(test)]
 pub(self) mod harness {
-    use super::*;
-    use subseq_util::tables::PgVars;
+    use subseq_util::server::DatabaseConfig;
     use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
     use diesel::prelude::*;
     use diesel::pg::Pg;
@@ -86,7 +85,11 @@ pub(self) mod harness {
 
     impl Drop for DbHarness {
         fn drop(&mut self) {
-            let url = PgVars::from_raw("postgres", &self.password, &self.host, false).db_url("postgres");
+            let url = DatabaseConfig{username: "postgres".to_string(),
+                                     password: Some(self.password.clone()),
+                                     host: self.host.clone(),
+                                     port: 5432,
+                                     require_ssl: false}.db_url("postgres");
             let mut conn = PgConnection::establish(&url).expect("Cannot establish database connection");
 
             let disconnect_users = format!("SELECT pg_terminate_backend(pid)
@@ -107,7 +110,13 @@ pub(self) mod harness {
 
     impl DbHarness {
         pub fn new(host: &str, password: &str, database: &str) -> Self {
-            let url = PgVars::from_raw("postgres", password, host, false).db_url("postgres");
+            let url = DatabaseConfig{
+                username: "postgres".to_string(),
+                password: Some(password.to_string()),
+                host: host.to_string(),
+                port: 5432,
+                require_ssl: false
+            }.db_url("postgres");
             let mut conn = PgConnection::establish(&url).expect("Cannot establish database connection");
             let query = diesel::sql_query(&format!("CREATE DATABASE {}", database));
             query.execute(&mut conn).expect(&format!("Creating {} failed", database));
@@ -122,7 +131,13 @@ pub(self) mod harness {
         }
 
         pub fn conn(&self) -> PgConnection {
-            let url = PgVars::from_raw("postgres", &self.password, &self.host, false).db_url("postgres");
+            let url = DatabaseConfig {
+                username: "postgres".to_string(),
+                password: Some(self.password.clone()),
+                host: self.host.clone(),
+                port: 5432,
+                require_ssl: false
+            }.db_url("postgres");
             PgConnection::establish(&url).expect("Cannot establish database connection")
         }
     }

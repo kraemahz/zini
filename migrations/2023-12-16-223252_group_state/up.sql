@@ -1,44 +1,6 @@
 DROP TABLE task_components;
 DROP TABLE components;
 
--- Attach flows to every project so a task is created with it
-INSERT INTO users (id, email, created, salt) VALUES (
-    '00000000-0000-0000-0000-000000000000'::uuid,
-    'support@subseq.io',
-    NOW(),
-    E'\\x6b3333703332407375627365712e696f'
-);
-INSERT INTO flows (id, owner_id, created, flow_name, description) VALUES (
-    '00000000-0000-0000-0000-000000000000'::uuid,
-    '00000000-0000-0000-0000-000000000000'::uuid,
-    NOW(),
-    'Default',
-    'This is the default flow'
-);
-
-INSERT INTO flow_nodes (id, node_name) VALUES (
-    '00000000-0000-0000-0000-000000000000'::uuid,
-    'OPEN'
-), (
-    '00000000-0000-0000-0000-000000000001'::uuid,
-    'CLOSED'
-);
-INSERT INTO flow_assignments (flow_id, node_id) VALUES (
-    '00000000-0000-0000-0000-000000000000'::uuid,
-    '00000000-0000-0000-0000-000000000000'::uuid
-), (
-    '00000000-0000-0000-0000-000000000000'::uuid,
-    '00000000-0000-0000-0000-000000000001'::uuid
-);
-INSERT INTO flow_node_connections (from_node_id, to_node_id) VALUES (
-    '00000000-0000-0000-0000-000000000000'::uuid,
-    '00000000-0000-0000-0000-000000000001'::uuid
-);
-INSERT INTO flow_exits (flow_id, node_id) VALUES (
-    '00000000-0000-0000-0000-000000000000'::uuid,
-    '00000000-0000-0000-0000-000000000001'::uuid
-);
-
 ALTER TABLE projects ADD COLUMN default_flow_id UUID NOT NULL
     DEFAULT '00000000-0000-0000-0000-000000000000'::uuid;
 

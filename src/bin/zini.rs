@@ -1,31 +1,37 @@
 use std::fs::File;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::env;
 
+use clap::Parser;
 use subseq_util::{
     Router,
     BaseConfig,
     InnerConfig,
     tracing::setup_tracing,
-    tables::{establish_connection_pool, User},
-    api::{users, sessions, handle_rejection, init_session_store},
+    tables::{establish_connection_pool},
+    api::{sessions, handle_rejection, init_session_store},
     oidc::{init_client_pool, IdentityProvider, OidcCredentials}
 };
 use tokio::sync::broadcast;
-use warp::Filter;
+use warp::{Filter, reject::Rejection};
 
 use zini::api::tasks::TaskStatePayload;
-use zini::tables::{Project, Task, Flow, Graph};
+use zini::tables::{Project, Task, Flow, Graph, User};
 use zini::api::*;
+
+
+#[derive(Parser, Debug)]
+#[command(author, version, about)]
+struct Args {
+    conf: PathBuf,
+}
 
 
 #[tokio::main]
 async fn main() {
     setup_tracing("zini");
-
-    let args: Vec<String> = env::args().collect();
-    let conf_path = args.last().expect("Need a configuration file").clone();
-    let conf_file = File::open(&conf_path).expect("Could not open config file");
+    let args = Args::parse();
+    let conf_file = File::open(args.conf).expect("Could not open file");
     let conf: BaseConfig = serde_json::from_reader(conf_file).expect("Reading config failed");
     let conf: InnerConfig = conf.try_into().expect("Could not fetch all secrets from environment");
 
@@ -67,11 +73,16 @@ async fn main() {
                        info.status());
     });
 
+    let probe = warp::path("probe")
+        .and(warp::get())
+        .and_then(|| async {Ok::<_, Rejection>(warp::reply::html("<html>up</html>"))});
+
     let routes = projects::routes(idp.clone(), session.clone(), pool.clone(), project_tx)
         .or(users::routes(pool.clone(), user_tx))
         .or(tasks::routes(idp.clone(), session.clone(), pool.clone(), task_tx, task_update_tx))
         .or(flows::routes(idp.clone(), session.clone(), pool.clone(), flow_tx, graph_tx))
         .or(sessions::routes(session.clone(), idp.clone()))
+        .or(probe)
         .recover(handle_rejection)
         .with(log_requests);
 

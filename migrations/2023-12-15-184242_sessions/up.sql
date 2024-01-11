@@ -1,4 +1,4 @@
 CREATE TABLE sessions (
-    user_id UUID PRIMARY KEY REFERENCES users(id),
+    user_id UUID PRIMARY KEY REFERENCES auth.users(id),
     token BYTEA NOT NULL
 );

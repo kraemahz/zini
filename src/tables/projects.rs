@@ -80,10 +80,9 @@ mod test {
         let db_name = to_pg_db_name(function_name!());
         let harness = DbHarness::new("localhost", "development", &db_name);
         let mut conn = harness.conn(); 
-        let (mut user_tx, _) = broadcast::channel(1);
         let (mut tx, _) = broadcast::channel(1);
 
-        let user = User::create(&mut conn, &mut user_tx, "test@example.com", None, None).expect("user");
+        let user = User::create(&mut conn, Uuid::new_v4(), "test@example.com", None).expect("user");
         let proj = Project::create(&mut conn,
                                    &mut tx,
                                    &user,

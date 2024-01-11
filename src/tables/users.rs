@@ -138,7 +138,7 @@ mod test {
         let db_name = to_pg_db_name(function_name!());
         let harness = DbHarness::new("localhost", "development", &db_name);
         let mut conn = harness.conn(); 
-        let user = User::create(&mut conn, &mut tx, Uuid::new_v4(), "test@example.com", Some("test_user")).expect("user");
+        let user = User::create(&mut conn, Uuid::new_v4(), "test@example.com", Some("test_user")).expect("user");
         let user2 = User::get(&mut conn, user.id).expect("user2");
         assert_eq!(user, user2);
 

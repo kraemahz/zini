@@ -553,6 +553,7 @@ impl TaskLink {
 #[cfg(test)]
 mod test {
     use super::*;
+    use uuid::Uuid;
     use crate::tables::harness::{to_pg_db_name, DbHarness};
     use function_name::named;
 
@@ -563,10 +564,9 @@ mod test {
         let harness = DbHarness::new("localhost", "development", &db_name);
         let mut conn = harness.conn(); 
         let (mut tx, _) = broadcast::channel(1);
-        let (mut user_tx, _) = broadcast::channel(1);
         let (mut proj_tx, _) = broadcast::channel(1);
 
-        let user = User::create(&mut conn, &mut user_tx, "test@example.com", Some("test_user"), Some("password")).expect("user");
+        let user = User::create(&mut conn, Uuid::new_v4(), "test@example.com", Some("test_user")).expect("user");
         let mut proj = Project::create(
             &mut conn,
             &mut proj_tx,

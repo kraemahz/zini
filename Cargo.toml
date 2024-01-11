@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 anymap = "0.12.1"
 chrono = { version = "0.4.31", features = ["serde"] }
+clap = { version = "4.4.14", features = ["derive"] }
 console-subscriber = "0.2.0"
 diesel = { version = "2.1.4", features = ["chrono", "postgres", "r2d2", "uuid"] }
 futures = "0.3.30"

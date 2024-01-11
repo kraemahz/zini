@@ -1,27 +1,10 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
----- Users
--- Create Users Table
-CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    email VARCHAR NOT NULL UNIQUE,
-    created TIMESTAMP NOT NULL,
-    salt BYTEA,
-    hash BYTEA NULL,
-    CONSTRAINT email_format_check CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
-);
-
-CREATE TABLE user_id_accounts (
-    user_id UUID NOT NULL REFERENCES users(id),
-    username VARCHAR NOT NULL UNIQUE,
-    PRIMARY KEY (user_id, username)
-);
-
 ---- Projects
 CREATE TABLE projects (
     id UUID PRIMARY KEY,
     name VARCHAR NOT NULL UNIQUE,
-    owner_id UUID NOT NULL REFERENCES users(id),
+    owner_id UUID NOT NULL REFERENCES auth.users(id),
     created TIMESTAMP NOT NULL,
     description VARCHAR NOT NULL,
     n_tasks INTEGER DEFAULT 0
@@ -45,8 +28,8 @@ CREATE TABLE tasks (
     created TIMESTAMP NOT NULL,
     title VARCHAR NOT NULL,
     description TEXT NOT NULL,
-    author_id UUID NOT NULL REFERENCES users(id),
-    assignee_id UUID REFERENCES users(id)
+    author_id UUID NOT NULL REFERENCES auth.users(id),
+    assignee_id UUID REFERENCES auth.users(id)
 );
 
 -- Create Relationship Table for Tasks and Projects
@@ -73,7 +56,7 @@ CREATE TABLE task_components (
 -- Create Relationship Table for Tasks and Watchers (Many-to-Many)
 CREATE TABLE task_watchers (
     task_id UUID NOT NULL REFERENCES tasks(id),
-    watcher_id UUID NOT NULL REFERENCES users(id),
+    watcher_id UUID NOT NULL REFERENCES auth.users(id),
     PRIMARY KEY (task_id, watcher_id)
 );
 
@@ -81,7 +64,7 @@ CREATE TABLE task_watchers (
 -- Create Flows Table
 CREATE TABLE flows (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    owner_id UUID NOT NULL REFERENCES users(id),
+    owner_id UUID NOT NULL REFERENCES auth.users(id),
     created TIMESTAMP NOT NULL,
     flow_name VARCHAR NOT NULL,
     description TEXT NOT NULL
