@@ -77,12 +77,21 @@ async fn main() {
         .and(warp::get())
         .and_then(|| async {Ok::<_, Rejection>(warp::reply::html("<html>up</html>"))});
 
+    let frontend = warp::path::end().and(warp::fs::file("dist/index.html"));
+    let ico = warp::path("favicon.ico").and(warp::fs::file("dist/favicon.ico"));
+    let logo = warp::path("subseq-logo.svg").and(warp::fs::file("dist/subseq-logo.svg"));
+    let assets = warp::path("assets").and(warp::fs::dir("dist/assets"));
+
     let routes = projects::routes(idp.clone(), session.clone(), pool.clone(), project_tx)
         .or(users::routes(pool.clone(), user_tx))
         .or(tasks::routes(idp.clone(), session.clone(), pool.clone(), task_tx, task_update_tx))
         .or(flows::routes(idp.clone(), session.clone(), pool.clone(), flow_tx, graph_tx))
         .or(sessions::routes(session.clone(), idp.clone()))
         .or(probe)
+        .or(frontend)
+        .or(ico)
+        .or(logo)
+        .or(assets)
         .recover(handle_rejection)
         .with(log_requests);
 
