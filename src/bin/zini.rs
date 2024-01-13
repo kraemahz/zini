@@ -1,3 +1,4 @@
+use std::env;
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,6 +35,8 @@ async fn main() {
     let conf_file = File::open(args.conf).expect("Could not open file");
     let conf: BaseConfig = serde_json::from_reader(conf_file).expect("Reading config failed");
     let conf: InnerConfig = conf.try_into().expect("Could not fetch all secrets from environment");
+    let openai_api_key = env::var("OPENAI_API_KEY").expect("Need to specify OPENAI_API_KEY");
+    let auth_token: Arc<str> = openai_api_key.into();
 
     // Database and events
     let database_url = conf.database.db_url("zini");
@@ -84,7 +87,7 @@ async fn main() {
 
     let routes = projects::routes(idp.clone(), session.clone(), pool.clone(), project_tx)
         .or(users::routes(pool.clone(), user_tx))
-        .or(tasks::routes(idp.clone(), session.clone(), pool.clone(), task_tx, task_update_tx))
+        .or(tasks::routes(idp.clone(), session.clone(), pool.clone(), auth_token.clone(), task_tx, task_update_tx))
         .or(flows::routes(idp.clone(), session.clone(), pool.clone(), flow_tx, graph_tx))
         .or(sessions::routes(session.clone(), idp.clone()))
         .or(probe)
