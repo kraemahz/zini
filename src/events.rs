@@ -102,10 +102,10 @@ async fn gen_voice_beams() -> (String, String) {
             .map(char::from)
             .collect()
     };
-    let voice_stream: String = format!("urn:subseq.io:voice:audio:{}", rand_id);
+    let voice_stream: &str = "urn:subseq.io:voice:audio:request";
     let text_stream: String = format!("urn:subseq.io:voice:text:{}", rand_id);
 
-    (voice_stream, text_stream)
+    (voice_stream.to_string(), text_stream)
 }
 
 #[derive(Clone)]
