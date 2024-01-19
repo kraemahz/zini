@@ -4,7 +4,7 @@ use diesel::connection::{Connection, LoadConnection};
 use diesel::pg::Pg;
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
-use subseq_util::api::*;
+use subseq_util::{api::*, Router};
 use subseq_util::oidc::IdentityProvider;
 use subseq_util::tables::DbPool;
 use tokio::sync::broadcast;
@@ -228,8 +228,11 @@ async fn update_flow_graph_handler(
 pub fn routes(idp: Arc<IdentityProvider>,
               session: MemoryStore,
               pool: Arc<DbPool>,
-              flow_tx: broadcast::Sender<Flow>,
-              graph_tx: broadcast::Sender<Graph>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+              router: &mut Router) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone
+{
+    let flow_tx: broadcast::Sender<Flow> = router.announce();
+    let graph_tx: broadcast::Sender<Graph> = router.announce();
+
     let create_flow = warp::post()
         .and(warp::body::json())
         .and(authenticate(idp.clone(), session.clone()))

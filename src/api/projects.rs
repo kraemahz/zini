@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Deserialize;
-use subseq_util::api::*;
+use subseq_util::{api::*, Router};
 use subseq_util::oidc::IdentityProvider;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -92,7 +92,9 @@ pub async fn get_project_handler(project_id: String,
 pub fn routes(idp: Arc<IdentityProvider>,
               session: MemoryStore,
               pool: Arc<DbPool>,
-              project_tx: broadcast::Sender<Project>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+              router: &mut Router) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+    let project_tx: broadcast::Sender<Project> = router.announce();
+
     let create_project = warp::post()
         .and(warp::body::json())
         .and(authenticate(idp.clone(), session.clone()))

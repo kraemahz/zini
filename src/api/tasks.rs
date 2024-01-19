@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use diesel::{PgConnection, QueryResult};
-use lazy_static::lazy_static;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use subseq_util::api::*;
+use subseq_util::{api::*, Router};
 use subseq_util::oidc::IdentityProvider;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::broadcast::error::RecvError;
+use tokio::task::spawn;
+use tokio::time::timeout;
 use uuid::Uuid;
 use warp::{Filter, Reply, Rejection};
 use warp_sessions::MemoryStore;
@@ -24,10 +25,12 @@ use crate::tables::{
     TaskUpdate,
     User,
 };
-use crate::llm::{CompletionsRequest, Message, Role, completion, GPT3_MODEL};
+use super::prompts::{PromptChannel, PromptResponseType, PromptRequest, PromptResponse};
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TaskPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<Uuid>,
     project_id: Uuid,
     title: Option<String>, 
     description: String,
@@ -38,57 +41,144 @@ pub struct TitleJson {
     title: String
 }
 
-async fn title_from_description(description: &str, auth_token: &str) -> Option<String> {
-    lazy_static! {
-        static ref BASE_PROMPT: Message = Message {
-            role: Role::System,
-            content: "Convert the provided description into a descriptive title which summarizes\
-     the important details. Only reply in the JSON format {\"title\": \"response\"}".to_string(),
-            tool_calls: None
-        };
-    }
+#[derive(Deserialize, Serialize, Default)]
+pub struct DescriptionJson {
+    description: String
+}
 
-    let messages = vec![
-        BASE_PROMPT.clone(),
-        Message {role: Role::User,
-                 content: description.to_string(),
-                 tool_calls: None}
-    ];
-    let request = CompletionsRequest {
-        model: GPT3_MODEL.to_string(),
-        messages,
-        temperature: Some(0.0),
-        response_format: Some(json!({"type": "json_object"})),
-        ..CompletionsRequest::default()
+async fn title_from_description(
+    description: &str,
+    prompt_request_tx: &mut mpsc::Sender<PromptChannel>) -> Option<String>
+{
+    let (tx, rx) = oneshot::channel();
+    let request = PromptRequest{
+        request_id: Uuid::new_v4(),
+        prompt_id: "tools_aNDkkK".into(),
+        prompt: description.to_string()
     };
-
-    let client = Client::new();
-    let response = completion(&client, auth_token, request).await.ok()?;
-    let choice = response.choices.first().unwrap();
-    let message = &choice.message.content;
-    let TitleJson{title} = match serde_json::from_str(message) {
-        Ok(title) => title,
-        Err(err) => {
-            tracing::error!("Response deserialization error: {}\n{}", err, message);
+    if prompt_request_tx.send((request, tx)).await.is_err() {
+        return None;
+    }
+    let response = match timeout(Duration::from_secs(10), rx).await {
+        Ok(Ok(response)) => response,
+        Err(_) => {
+            tracing::warn!("Timed out waiting for title");
+            return None;
+        }
+        Ok(Err(_)) => {
             return None;
         }
     };
-    Some(title)
+    let PromptResponse{request_id: _, response, error} = response;
+    match response {
+        Some(PromptResponseType::Json(message)) => {
+            match serde_json::from_value::<TitleJson>(message) {
+                Ok(title) => Some(title.title),
+                Err(err) => {
+                    tracing::error!("Response deserialization error: {}", err);
+                    None
+                }
+            }
+        }
+        Some(PromptResponseType::Text(message)) => Some(message),
+        None => {
+            tracing::error!("Prompt error: {:?}", error);
+            None
+        }
+    }
 }
+
+pub fn create_task_worker(db_pool: Arc<DbPool>, router: &mut Router) {
+    let sender = router.announce::<Task>();
+    let mut receiver = router.subscribe::<TaskPayload>();
+    let mut prompt_request_tx: mpsc::Sender<PromptChannel> = router.get_address()
+        .expect("Prompt channel undefined").clone();
+
+    spawn(async move {
+        loop {
+            let payload = receiver.recv().await;
+            let payload = match payload {
+                Ok(payload) => payload,
+                Err(RecvError::Lagged(n)) => {
+                    tracing::warn!("Missed {} messages on TaskPayload!", n);
+                    continue;
+                }
+                Err(_) => {
+                    break;
+                }
+            };
+
+            let TaskPayload{task_id, project_id, title, description} = payload;
+            let task_id = if let Some(task_id) = task_id { task_id } else { Uuid::new_v4() };
+            let title = if let Some(title) = title { title } else {
+                match title_from_description(&description, &mut prompt_request_tx).await {
+                    Some(title) => title,
+                    None => {
+                        tracing::error!("Failed to create title for issue");
+                        continue;
+                    }
+                }
+            };
+
+            let mut conn = match db_pool.get() {
+                Ok(conn) => conn,
+                Err(_) => {
+                    tracing::error!("Database error");
+                    continue;
+                }
+            };
+
+            let user = match User::system_user(&mut conn) {
+                Ok(user) => user,
+                Err(_) => {
+                    tracing::error!("No system user configured!");
+                    continue;
+                }
+            };
+
+            let mut project = match Project::get(&mut conn, project_id) {
+                Some(project) => project,
+                None => {
+                    tracing::error!("No such project: {}", project_id);
+                    continue;
+                }
+            };
+
+            let task = match Task::create(
+                &mut conn,
+                task_id,
+                &mut project,
+                &title,
+                &description,
+                &user,
+            ) {
+                Ok(task) => task,
+                Err(_) => {
+                    tracing::error!("Failed to create task");
+                    continue;
+                }
+            };
+            sender.send(task).ok();
+        }
+    });
+}
+
 
 async fn create_task_handler(payload: TaskPayload,
                              auth: AuthenticatedUser,
                              db_pool: Arc<DbPool>,
-                             auth_token: Arc<str>,
-                             mut sender: broadcast::Sender<Task>) -> Result<impl Reply, Rejection> {
+                             mut prompt_request_tx: mpsc::Sender<PromptChannel>,
+                             sender: broadcast::Sender<Task>) -> Result<impl Reply, Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
     };
 
-    let TaskPayload{project_id, title, description} = payload;
+    // We explicitly ignore setting the task id from the api.
+    let TaskPayload{task_id: _, project_id, title, description} = payload;
+
     let title = if let Some(title) = title { title } else {
-        title_from_description(&description, auth_token.as_ref()).await
+        title_from_description(&description, &mut prompt_request_tx).await
             .ok_or_else(|| warp::reject::custom(InvalidConfigurationError{}))?
     };
 
@@ -104,7 +194,7 @@ async fn create_task_handler(payload: TaskPayload,
 
     let task = match Task::create(
         &mut conn,
-        &mut sender,
+        Uuid::new_v4(),
         &mut project,
         &title,
         &description,
@@ -116,6 +206,7 @@ async fn create_task_handler(payload: TaskPayload,
             return Err(warp::reject::custom(ConflictError{}));
         }
     };
+    sender.send(task.clone()).ok();
     let payload = match TaskStatePayload::build(&mut conn, task) {
         Ok(task) => task,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
@@ -233,24 +324,26 @@ async fn filter_tasks_handler(payload: QueryPayload,
     Ok(warp::reply::json(&reply))
 }
 
-pub fn with_api_key(api_key: Arc<str>)
-    -> impl Filter<Extract = (Arc<str>,),
-                   Error = std::convert::Infallible> + Clone
+pub fn with_channel<M: Send + Sync>(channel: mpsc::Sender<M>)
+    -> impl Filter<Extract = (mpsc::Sender<M>,), Error = std::convert::Infallible> + Clone
 {
-    warp::any().map(move || api_key.clone())
+    warp::any().map(move || channel.clone())
 }
 
 pub fn routes(idp: Arc<IdentityProvider>,
               session: MemoryStore,
               pool: Arc<DbPool>,
-              auth_token: Arc<str>,
-              task_tx: broadcast::Sender<Task>,
-              task_update_tx: broadcast::Sender<TaskStatePayload>) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+              router: &mut Router,) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+    let task_tx: broadcast::Sender<Task> = router.announce();
+    let task_update_tx: broadcast::Sender<TaskStatePayload> = router.announce();
+    let prompt_request_tx: mpsc::Sender<PromptChannel> = router.get_address()
+        .expect("No prompt request channel defined").clone();
+
     let create_task = warp::post()
         .and(warp::body::json())
         .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
-        .and(with_api_key(auth_token.clone()))
+        .and(with_channel(prompt_request_tx))
         .and(with_broadcast(task_tx))
         .and_then(create_task_handler);
 

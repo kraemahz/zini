@@ -1,4 +1,3 @@
-use std::env;
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,16 +8,14 @@ use subseq_util::{
     BaseConfig,
     InnerConfig,
     tracing::setup_tracing,
-    tables::{establish_connection_pool},
+    tables::establish_connection_pool,
     api::{sessions, handle_rejection, init_session_store},
     oidc::{init_client_pool, IdentityProvider, OidcCredentials}
 };
-use tokio::sync::broadcast;
 use warp::{Filter, reject::Rejection};
 
-use zini::api::tasks::TaskStatePayload;
-use zini::tables::{Project, Task, Flow, Graph, User};
 use zini::api::*;
+use zini::events;
 
 
 #[derive(Parser, Debug)]
@@ -27,6 +24,7 @@ struct Args {
     conf: PathBuf,
 }
 
+const ZINI_PORT: u16 = 8445;
 
 #[tokio::main]
 async fn main() {
@@ -35,8 +33,6 @@ async fn main() {
     let conf_file = File::open(args.conf).expect("Could not open file");
     let conf: BaseConfig = serde_json::from_reader(conf_file).expect("Reading config failed");
     let conf: InnerConfig = conf.try_into().expect("Could not fetch all secrets from environment");
-    let openai_api_key = env::var("OPENAI_API_KEY").expect("Need to specify OPENAI_API_KEY");
-    let auth_token: Arc<str> = openai_api_key.into();
 
     // Database and events
     let database_url = conf.database.db_url("zini");
@@ -46,7 +42,7 @@ async fn main() {
 
     // OIDC
     init_client_pool(&conf.tls.ca_path);
-    let redirect_url = "https://localhost:8445/auth";
+    let redirect_url = format!("https://localhost:{ZINI_PORT}/auth");
     let oidc = OidcCredentials::new(&conf.oidc.client_id,
                                     &conf.oidc.client_secret.expect("No OIDC Client Secret"),
                                     redirect_url)
@@ -59,12 +55,8 @@ async fn main() {
     let session = init_session_store();
 
     let mut router = Router::new();
-    let user_tx: broadcast::Sender<User> = router.announce();
-    let task_tx: broadcast::Sender<Task> = router.announce();
-    let project_tx: broadcast::Sender<Project> = router.announce();
-    let flow_tx: broadcast::Sender<Flow> = router.announce();
-    let graph_tx: broadcast::Sender<Graph> = router.announce();
-    let task_update_tx: broadcast::Sender<TaskStatePayload> = router.announce();
+    events::emit_events(&prism_url, &mut router, pool.clone());
+    tasks::create_task_worker(pool.clone(), &mut router);
 
     let log_requests = warp::log::custom(|info| {
         tracing::info!("{} {} {} {}",
@@ -79,17 +71,17 @@ async fn main() {
     let probe = warp::path("probe")
         .and(warp::get())
         .and_then(|| async {Ok::<_, Rejection>(warp::reply::html("<html>up</html>"))});
-
     let frontend = warp::path::end().and(warp::fs::file("dist/index.html"));
     let ico = warp::path("favicon.ico").and(warp::fs::file("dist/favicon.ico"));
     let logo = warp::path("subseq-logo.svg").and(warp::fs::file("dist/subseq-logo.svg"));
     let assets = warp::path("assets").and(warp::fs::dir("dist/assets"));
 
-    let routes = projects::routes(idp.clone(), session.clone(), pool.clone(), project_tx)
-        .or(users::routes(pool.clone(), user_tx))
-        .or(tasks::routes(idp.clone(), session.clone(), pool.clone(), auth_token.clone(), task_tx, task_update_tx))
-        .or(flows::routes(idp.clone(), session.clone(), pool.clone(), flow_tx, graph_tx))
+    let routes = projects::routes(idp.clone(), session.clone(), pool.clone(), &mut router)
+        .or(users::routes(pool.clone(), &mut router))
+        .or(tasks::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
+        .or(flows::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
         .or(sessions::routes(session.clone(), idp.clone()))
+        .or(voice::routes(idp.clone(), session.clone(), &mut router))
         .or(probe)
         .or(frontend)
         .or(ico)
@@ -98,10 +90,9 @@ async fn main() {
         .recover(handle_rejection)
         .with(log_requests);
 
-    zini::events::emit_events(&prism_url, router, pool.clone());
     warp::serve(routes)
         .tls()
         .cert_path(&conf.tls.cert_path)
         .key_path(&conf.tls.key_path)
-        .run(([127, 0, 0, 1], 8445)).await;
+        .run(([127, 0, 0, 1], ZINI_PORT)).await;
 }

@@ -124,6 +124,8 @@ pub mod auth {
         auth.user_id_accounts (user_id, username) {
             user_id -> Uuid,
             username -> Varchar,
+            #[max_length = 10]
+            account_type -> Nullable<Varchar>,
         }
     }
 

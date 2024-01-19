@@ -4,7 +4,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 use warp::{Filter, Rejection, Reply};
 
-use subseq_util::api::*;
+use subseq_util::{api::*, Router};
 use crate::tables::{DbPool, User};
 
 #[derive(Deserialize)]
@@ -54,8 +54,10 @@ pub async fn get_user_handler(
 
 pub fn routes(
     pool: Arc<DbPool>,
-    user_tx: broadcast::Sender<User>,
+    router: &mut Router,
 ) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
+    let user_tx: broadcast::Sender<User> = router.announce();
+
     let create_user = warp::post()
         .and(warp::body::json())
         .and(with_db(pool.clone()))

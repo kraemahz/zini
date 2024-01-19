@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use chrono::NaiveDateTime;
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use subseq_util::api::AuthenticatedUser;
@@ -44,7 +43,7 @@ impl PartialEq for Task {
 
 impl Task {
     pub fn create(conn: &mut PgConnection,
-                  sender: &mut broadcast::Sender<Self>,
+                  task_id: Uuid,
                   project: &mut Project,
                   title: &str,
                   description: &str,
@@ -54,7 +53,7 @@ impl Task {
         let slug = format!("{}-{}", project.name, project.n_tasks);
 
         let task = Self {
-            id: Uuid::new_v4(),
+            id: task_id,
             slug,
             created: chrono::Utc::now().naive_utc(),
             title: title.to_owned(),
@@ -99,8 +98,6 @@ impl Task {
                 .execute(transact)?;
             QueryResult::Ok(())
         })?;
-        sender.send(task.clone()).ok();
-
         Ok(task)
     }
 
@@ -563,7 +560,6 @@ mod test {
         let db_name = to_pg_db_name(function_name!());
         let harness = DbHarness::new("localhost", "development", &db_name);
         let mut conn = harness.conn(); 
-        let (mut tx, _) = broadcast::channel(1);
         let (mut proj_tx, _) = broadcast::channel(1);
 
         let user = User::create(&mut conn, Uuid::new_v4(), "test@example.com", Some("test_user")).expect("user");
@@ -574,8 +570,7 @@ mod test {
             "proj",
             "",
             None).expect("proj");
-        let task = Task::create(&mut conn, &mut tx, &mut proj, "Task 1", "Do this", &user).expect("task");
-
+        let task = Task::create(&mut conn, Uuid::new_v4(), &mut proj, "Task 1", "Do this", &user).expect("task");
         let task2 = Task::get(&mut conn, task.id).expect("task2");
 
         assert_eq!(task.slug, "PROJ-1");

@@ -11,6 +11,7 @@ use subseq_util::tables::ValidationErrorMessage;
 pub struct UserIdAccount {
     pub user_id: Uuid,
     pub username: String,
+    pub account_type: Option<String>,
 }
 
 #[derive(Queryable, Insertable, Clone, Debug, Serialize, Deserialize)]
@@ -60,6 +61,18 @@ impl User {
         first_char_is_alpha
     }
 
+    pub fn system_user(conn: &mut PgConnection) -> QueryResult<Self> {
+        use crate::schema::auth::users;
+        use crate::schema::auth::user_id_accounts;
+
+        let user = users::dsl::users
+            .inner_join(user_id_accounts::table.on(users::id.eq(user_id_accounts::user_id)))
+            .filter(user_id_accounts::dsl::account_type.eq("system"))
+            .select(users::all_columns)
+            .first::<User>(conn)?;
+        Ok(user)
+    }
+
     pub fn create(conn: &mut PgConnection,
                   user_id: Uuid,
                   email: &str,
@@ -87,7 +100,8 @@ impl User {
         if let Some(username) = username {
             let user_id_account = UserIdAccount {
                 user_id: user.id,
-                username: username.to_ascii_lowercase()
+                username: username.to_ascii_lowercase(),
+                account_type: None
             };
             diesel::insert_into(crate::schema::auth::user_id_accounts::table)
                 .values(&user_id_account)
