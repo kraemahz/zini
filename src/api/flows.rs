@@ -225,7 +225,7 @@ async fn update_flow_graph_handler(
 }
 
 // Add the route for creating a flow to your routes function
-pub fn routes(idp: Arc<IdentityProvider>,
+pub fn routes(idp: Option<Arc<IdentityProvider>>,
               session: MemoryStore,
               pool: Arc<DbPool>,
               router: &mut Router) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone

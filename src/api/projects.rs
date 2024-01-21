@@ -89,7 +89,7 @@ pub async fn get_project_handler(project_id: String,
     Ok(warp::reply::json(&project))
 }
 
-pub fn routes(idp: Arc<IdentityProvider>,
+pub fn routes(idp: Option<Arc<IdentityProvider>>,
               session: MemoryStore,
               pool: Arc<DbPool>,
               router: &mut Router) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {

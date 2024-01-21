@@ -1,15 +1,20 @@
 use std::collections::HashMap;
+use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use byteorder::{ByteOrder, NetworkEndian};
 use futures::FutureExt;
 use futures_util::stream::StreamExt;
 use futures_util::{pin_mut, sink::SinkExt};
+use rubato::{Resampler, SincFixedIn, SincInterpolationType, SincInterpolationParameters};
 use serde::{Serialize, Deserialize};
+use symphonia::core::audio::SampleBuffer;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::errors::Error as SymError;
 use subseq_util::Router;
 use subseq_util::api::{authenticate, AuthenticatedUser};
 use subseq_util::oidc::IdentityProvider;
+use symphonia::core::probe::Hint;
 use tokio::{sync::{broadcast, mpsc, oneshot}, task::spawn, time::timeout};
 use uuid::Uuid;
 use warp::filters::ws::{Message, WebSocket};
@@ -18,14 +23,14 @@ use warp_sessions::MemoryStore;
 
 #[derive(Clone, Debug)]
 pub struct AudioData {
-    pub payload: Vec<i16>,
+    pub payload: Vec<u8>,
     pub count: usize,
 }
 
 #[derive(Clone, Debug)]
 pub struct SpeechToText{
     pub conversation_id: Uuid,
-    pub payload: Vec<i16>,
+    pub payload: Vec<f32>,
     pub count: usize,
     pub finalize: bool
 }
@@ -33,7 +38,7 @@ pub struct SpeechToText{
 #[derive(Clone, Debug, Serialize)]
 pub struct SpeechToTextRequest {
     pub conversation_id: Uuid,
-    pub payload: Vec<i16>,
+    pub payload: Vec<f32>,
     pub count: usize,
     pub beam: String,
     pub finalize: bool
@@ -66,6 +71,72 @@ pub struct Instruction {
     pub segments: Vec<usize>
 }
 
+pub fn decode_webm_bytes_to_pcm(payload: Vec<u8>) -> Result<(u32, Vec<f32>), SymError> {
+    let cursor = io::Cursor::new(payload);
+    let media_stream = MediaSourceStream::new(Box::new(cursor), Default::default());
+    let mut hint = Hint::new();
+    hint.mime_type("audio/webm");
+    let probed = symphonia::default::get_probe()
+        .format(&hint, media_stream, &Default::default(), &Default::default())?;
+    let mut format_reader = probed.format;
+    let mut track = format_reader.default_track()
+        .ok_or_else(|| SymError::Unsupported("No track"))?.clone();
+    track.codec_params.max_frames_per_packet = Some(1024);
+    let rate = track.codec_params.sample_rate.expect("No sample rate");
+    let track_id = track.id;
+
+    let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &Default::default())?;
+    let mut pcm_data = None;
+    let mut samples = Vec::new();
+
+    while let Ok(packet) = format_reader.next_packet() {
+        if packet.track_id() != track_id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(audio_buf) => {
+                if pcm_data.is_none() {
+                    let spec = *audio_buf.spec();
+                    let duration = audio_buf.capacity() as u64;
+                    pcm_data = Some(SampleBuffer::<f32>::new(duration, spec));
+                }
+                if let Some(buf) = &mut pcm_data {
+                    buf.copy_interleaved_ref(audio_buf);
+                    samples.extend(buf.samples());
+                }
+            }
+            Err(SymError::DecodeError(_)) => (),
+            Err(_) => break,
+        }
+    }
+    Ok((rate, samples))
+}
+
+pub fn resample_audio(input_pcm: Vec<f32>, from_rate: u32, to_rate: u32) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    let ratio = to_rate as f64 / from_rate as f64;
+    let output_size = (input_pcm.len() as f64 * ratio).round() as usize;
+    let params = SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.8,
+        interpolation: SincInterpolationType::Nearest,
+        oversampling_factor: 256,
+        window: rubato::WindowFunction::BlackmanHarris2,
+    };
+
+    let mut resampler = SincFixedIn::<f32>::new(
+        ratio,
+        1.0,
+        params,
+        input_pcm.len(),
+        1
+    )?;
+
+    // HACK: This random +10 made the 48k -> 16k version work
+    let mut output_pcm = vec![0f32; output_size + 10];
+    resampler.process_into_buffer(&[input_pcm], &mut [output_pcm.as_mut_slice()], None)?;
+    Ok(output_pcm)
+}
+
 pub fn create_audio_timing_task(
     auth_user: AuthenticatedUser,
     text_tx: mpsc::Sender<SpeechToTextResponse>,
@@ -77,7 +148,7 @@ pub fn create_audio_timing_task(
 
     spawn(async move {
         let mut n_messages: usize = 0;
-        let mut stream: Option<Vec<i16>> = None;
+        let mut stream: Option<Vec<u8>> = None;
         let mut segments = Vec::new();
 
         loop {
@@ -89,6 +160,14 @@ pub fn create_audio_timing_task(
                     // Timeout
                     // Collect stream and send as finalized message.
                     if let Some(payload) = stream.take() {
+                        let (rate, payload) = match decode_webm_bytes_to_pcm(payload) {
+                            Ok(payload) => payload,
+                            Err(err) => {
+                                tracing::error!("Decoding sample failed: {}", err);
+                                continue;
+                            }
+                        };
+                        let payload = resample_audio(payload, rate, 16_000).expect("Resampling failed");
                         let request = SpeechToText {
                             conversation_id,
                             count: n_messages,
@@ -163,10 +242,8 @@ async fn proxy_audio_socket(
         let mut msg_counter = 0;
         while let Some(message) = read.next().await {
             if let Ok(message) = message {
-                let mut payload = vec![];
-                NetworkEndian::read_i16_into(message.as_bytes(), &mut payload);
                 let audio = AudioData {
-                    payload,
+                    payload: message.as_bytes().to_vec(),
                     count: msg_counter
                 };
                 audio_tx.send(audio).await.ok();
@@ -214,7 +291,7 @@ impl VoiceResponseCollection {
 }
 
 pub fn routes(
-    idp: Arc<IdentityProvider>, session: MemoryStore, router: &mut Router
+    idp: Option<Arc<IdentityProvider>>, session: MemoryStore, router: &mut Router
 ) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     let speech_text_tx: mpsc::Sender<(SpeechToText, oneshot::Sender<SpeechToTextResponse>)> =
         router.get_address().expect("Could not get SpeechToText channel").clone();

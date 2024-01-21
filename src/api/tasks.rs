@@ -330,7 +330,7 @@ pub fn with_channel<M: Send + Sync>(channel: mpsc::Sender<M>)
     warp::any().map(move || channel.clone())
 }
 
-pub fn routes(idp: Arc<IdentityProvider>,
+pub fn routes(idp: Option<Arc<IdentityProvider>>,
               session: MemoryStore,
               pool: Arc<DbPool>,
               router: &mut Router,) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {

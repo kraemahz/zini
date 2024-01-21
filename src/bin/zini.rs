@@ -41,15 +41,21 @@ async fn main() {
     let pool = Arc::new(pool);
 
     // OIDC
-    init_client_pool(&conf.tls.ca_path);
-    let redirect_url = format!("https://localhost:{ZINI_PORT}/auth");
-    let oidc = OidcCredentials::new(&conf.oidc.client_id,
-                                    &conf.oidc.client_secret.expect("No OIDC Client Secret"),
-                                    redirect_url)
-        .expect("Invalid OIDC Credentials");
-    let idp = IdentityProvider::new(&oidc, &conf.oidc.idp_url.to_string()).await
-        .expect("Failed to establish Identity Provider connection");
-    let idp = Arc::new(idp);
+    let (idp, tls) = match conf.oidc.as_ref() {
+        Some(oidc_conf) => {
+            let tls = conf.tls.as_ref().expect("Must define TLS conf with OIDC conf");
+            init_client_pool(tls.ca_path.as_str());
+            let redirect_url = format!("https://localhost:{ZINI_PORT}/auth");
+            let oidc = OidcCredentials::new(oidc_conf.client_id.as_str(),
+                                            oidc_conf.client_secret.clone().expect("No OIDC Client Secret"),
+                                            redirect_url)
+                .expect("Invalid OIDC Credentials");
+            let idp = IdentityProvider::new(&oidc, &oidc_conf.idp_url.to_string()).await
+                .expect("Failed to establish Identity Provider connection");
+            (Some(Arc::new(idp)), Some(tls))
+        }
+        None => (None, None)
+    };
 
     // Server setup
     let session = init_session_store();
@@ -80,19 +86,27 @@ async fn main() {
         .or(users::routes(pool.clone(), &mut router))
         .or(tasks::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
         .or(flows::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
-        .or(sessions::routes(session.clone(), idp.clone()))
         .or(voice::routes(idp.clone(), session.clone(), &mut router))
         .or(probe)
         .or(frontend)
         .or(ico)
         .or(logo)
-        .or(assets)
-        .recover(handle_rejection)
-        .with(log_requests);
+        .or(assets);
 
-    warp::serve(routes)
-        .tls()
-        .cert_path(&conf.tls.cert_path)
-        .key_path(&conf.tls.key_path)
-        .run(([127, 0, 0, 1], ZINI_PORT)).await;
+    if let Some(idp) = idp {
+        let routes = routes.or(sessions::routes(session, idp))
+            .recover(handle_rejection)
+            .with(log_requests);
+        let tls = tls.unwrap();
+        warp::serve(routes)
+            .tls()
+            .cert_path(tls.cert_path.as_str())
+            .key_path(tls.key_path.as_str())
+            .run(([127, 0, 0, 1], ZINI_PORT)).await;
+    } else {
+        let routes = routes.or(sessions::no_auth_routes(session))
+            .recover(handle_rejection)
+            .with(log_requests);
+        warp::serve(routes).run(([127, 0, 0, 1], ZINI_PORT)).await;
+    }
 }
