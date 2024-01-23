@@ -1,7 +1,6 @@
 use chrono::NaiveDateTime;
 use diesel::prelude::*;
 use serde::Serialize;
-use tokio::sync::broadcast;
 use uuid::Uuid;
 use subseq_util::tables::ValidationErrorMessage;
 
@@ -33,7 +32,6 @@ impl PartialEq for Project {
 
 impl Project {
     pub fn create(conn: &mut PgConnection,
-                  sender: &mut broadcast::Sender<Self>,
                   author: &User,
                   name: &str,
                   description: &str,
@@ -60,7 +58,6 @@ impl Project {
         diesel::insert_into(crate::schema::projects::table)
             .values(&project)
             .execute(conn)?;
-        sender.send(project.clone()).ok();
         Ok(project)
     }
 }
@@ -71,20 +68,19 @@ crate::zini_table!(Project, crate::schema::projects::dsl::projects);
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::tables::harness::{to_pg_db_name, DbHarness};
+    use subseq_util::tables::harness::{to_pg_db_name, DbHarness};
     use function_name::named;
+    use crate::tables::test::MIGRATIONS;
 
     #[test]
     #[named]
     fn test_proj_handle() {
         let db_name = to_pg_db_name(function_name!());
-        let harness = DbHarness::new("localhost", "development", &db_name);
+        let harness = DbHarness::new("localhost", "development", &db_name,
+                                     Some(MIGRATIONS));
         let mut conn = harness.conn(); 
-        let (mut tx, _) = broadcast::channel(1);
-
         let user = User::create(&mut conn, Uuid::new_v4(), "test@example.com", None).expect("user");
         let proj = Project::create(&mut conn,
-                                   &mut tx,
                                    &user,
                                    "test_proj",
                                    "This is a test",

@@ -9,7 +9,8 @@ edition = "2021"
 byteorder = "1.5.0"
 chrono = { version = "0.4.31", features = ["serde"] }
 clap = { version = "4.4.14", features = ["derive"] }
-diesel = { version = "2.1.4", features = ["chrono", "postgres", "r2d2", "uuid"] }
+diesel = { version = "2.1.4", features = ["chrono", "r2d2", "postgres", "postgres_backend", "uuid", "serde_json"] }
+email_address = "0.2.4"
 futures = "0.3.30"
 futures-util = { version = "0.3.29", features = ["tokio-io", "sink"] }
 http = "0.2.0"

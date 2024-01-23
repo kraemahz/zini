@@ -551,21 +551,21 @@ impl TaskLink {
 mod test {
     use super::*;
     use uuid::Uuid;
-    use crate::tables::harness::{to_pg_db_name, DbHarness};
+    use subseq_util::tables::harness::{to_pg_db_name, DbHarness};
     use function_name::named;
+    use crate::tables::test::MIGRATIONS;
 
     #[test]
     #[named]
     fn test_task_handle() {
         let db_name = to_pg_db_name(function_name!());
-        let harness = DbHarness::new("localhost", "development", &db_name);
+        let harness = DbHarness::new("localhost", "development", &db_name,
+                                     Some(MIGRATIONS));
         let mut conn = harness.conn(); 
-        let (mut proj_tx, _) = broadcast::channel(1);
 
         let user = User::create(&mut conn, Uuid::new_v4(), "test@example.com", Some("test_user")).expect("user");
         let mut proj = Project::create(
             &mut conn,
-            &mut proj_tx,
             &user,
             "proj",
             "",

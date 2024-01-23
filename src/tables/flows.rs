@@ -318,16 +318,16 @@ impl Graph {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::tables::harness::{to_pg_db_name, DbHarness};
+    use subseq_util::tables::harness::{to_pg_db_name, DbHarness};
     use function_name::named;
 
     #[test]
     #[named]
     fn test_flow_handle() {
         let db_name = to_pg_db_name(function_name!());
-        let harness = DbHarness::new("localhost", "development", &db_name);
+        let harness = DbHarness::new("localhost", "development", &db_name,
+                                     Some(crate::tables::test::MIGRATIONS));
         let mut conn = harness.conn(); 
-        let (mut tx, _) = broadcast::channel(1);
 
         let entry_node = FlowNode::create(&mut conn, "Open").expect("entry");
         let exit_node = FlowNode::create(&mut conn, "Closed").expect("entry");
@@ -336,7 +336,6 @@ mod test {
 
         let user = User::create(&mut conn, Uuid::new_v4(), "test@example.com", None).expect("user");
         let flow = Flow::create(&mut conn,
-                                &mut tx,
                                 &user,
                                 "flow".to_string(),
                                 "".to_string(),

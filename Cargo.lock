@@ -585,6 +585,7 @@ dependencies = [
  "itoa",
  "pq-sys",
  "r2d2",
+ "serde_json",
  "uuid",
 ]
 
@@ -710,6 +711,15 @@ dependencies = [
  "sec1",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "email_address"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2153bd83ebc09db15bcbdc3e2194d901804952e3dc96967e1cd3b0c5c32d112"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -2455,17 +2465,17 @@ checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
 
 [[package]]
 name = "subseq_util"
-version = "0.1.0"
-source = "git+https://github.com/kraemahz/subseq_util.git?branch=main#ba9fb5a34ecd0077c720cb83a1b9e6650da0de45"
+version = "0.1.2"
+source = "git+https://github.com/kraemahz/subseq_util.git?branch=main#3d686739e5d7cbceb93403a27bde4ff8f816f8e4"
 dependencies = [
  "anyhow",
  "anymap",
- "base64 0.21.7",
  "chrono",
  "cookie",
  "diesel",
+ "diesel_migrations",
+ "function_name",
  "openidconnect",
- "rand",
  "reqwest",
  "rustls-pemfile",
  "serde",
@@ -3431,6 +3441,7 @@ dependencies = [
  "clap",
  "diesel",
  "diesel_migrations",
+ "email_address",
  "function_name",
  "futures 0.3.30",
  "futures-util",

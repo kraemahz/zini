@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Deserialize;
-use subseq_util::{api::*, Router};
+use subseq_util::{api::*, Router, tables::UserTable};
 use subseq_util::oidc::IdentityProvider;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -21,7 +21,7 @@ pub struct ProjectPayload {
 pub async fn create_project_handler(payload: ProjectPayload,
                                     auth: AuthenticatedUser,
                                     db_pool: Arc<DbPool>,
-                                    mut sender: broadcast::Sender<Project>) -> Result<impl Reply, Rejection> {
+                                    sender: broadcast::Sender<Project>) -> Result<impl Reply, Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
@@ -39,7 +39,6 @@ pub async fn create_project_handler(payload: ProjectPayload,
 
     let project = match Project::create(
             &mut conn,
-            &mut sender,
             &user,
             &name.to_ascii_uppercase(),
             &description.unwrap_or_else(String::new),
@@ -47,6 +46,7 @@ pub async fn create_project_handler(payload: ProjectPayload,
         Ok(project) => project,
         Err(_) => return Err(warp::reject::custom(ConflictError{})),
     };
+    sender.send(project.clone()).ok();
     let mut dict = HashMap::new();
     dict.insert("project", project.id.to_string());
     Ok(warp::reply::json(&dict))

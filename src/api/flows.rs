@@ -6,7 +6,7 @@ use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 use subseq_util::{api::*, Router};
 use subseq_util::oidc::IdentityProvider;
-use subseq_util::tables::DbPool;
+use subseq_util::tables::{DbPool, UserTable};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 use warp::{Filter, Reply, Rejection};

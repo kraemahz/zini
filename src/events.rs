@@ -7,11 +7,11 @@ use http::Uri;
 use prism_client::{AsyncClient, Wavelet};
 use rand::{distributions::Alphanumeric, Rng};
 use subseq_util::router::Router;
-use subseq_util::tables::DbPool;
+use subseq_util::tables::{DbPool, UserTable};
 use tokio::spawn;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::api::tasks::TaskPayload;
+use crate::api::tasks::InnerTaskPayload;
 use crate::api::voice::{
     SpeechToText,
     SpeechToTextResponse,
@@ -133,7 +133,7 @@ struct WaveletHandler {
     job_result_tx: broadcast::Sender<JobResult>,
     job_created_tx: broadcast::Sender<Job>,
     user_created_tx: broadcast::Sender<UserCreated>,
-    create_task_tx: broadcast::Sender<TaskPayload>,
+    create_task_tx: broadcast::Sender<InnerTaskPayload>,
     prompt_requests: PromptResponseCollection,
     voice_requests: VoiceResponseCollection,
     voice_beam: String,
@@ -196,7 +196,7 @@ impl Future for WaveletHandler {
             }
             CREATE_TASK_BEAM => {
                 for photon in photons {
-                    let result: TaskPayload = match serde_json::from_slice(&photon.payload) {
+                    let result: InnerTaskPayload = match serde_json::from_slice(&photon.payload) {
                         Ok(ok) => ok,
                         Err(_) => {
                             tracing::error!("Received invalid Photon on {}", CREATE_TASK_BEAM);
@@ -247,7 +247,7 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
 
     // Jobs
     let job_tx: broadcast::Sender<Job> = router.announce();
-    let create_task_tx: broadcast::Sender<TaskPayload> = router.announce();
+    let create_task_tx: broadcast::Sender<InnerTaskPayload> = router.announce();
     let job_result_tx: broadcast::Sender<JobResult> = router.announce();
     let user_created_tx: broadcast::Sender<UserCreated> = router.announce();
 

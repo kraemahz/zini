@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use diesel::{PgConnection, QueryResult};
 use serde::{Deserialize, Serialize};
-use subseq_util::{api::*, Router};
+use subseq_util::{api::*, Router, tables::UserTable};
 use subseq_util::oidc::IdentityProvider;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::sync::broadcast::error::RecvError;
@@ -29,8 +29,15 @@ use super::prompts::{PromptChannel, PromptResponseType, PromptRequest, PromptRes
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TaskPayload {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    task_id: Option<Uuid>,
+    project_id: Uuid,
+    title: Option<String>, 
+    description: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct InnerTaskPayload {
+    user_id: Uuid,
+    task_id: Uuid,
     project_id: Uuid,
     title: Option<String>, 
     description: String,
@@ -90,7 +97,7 @@ async fn title_from_description(
 
 pub fn create_task_worker(db_pool: Arc<DbPool>, router: &mut Router) {
     let sender = router.announce::<Task>();
-    let mut receiver = router.subscribe::<TaskPayload>();
+    let mut receiver = router.subscribe::<InnerTaskPayload>();
     let mut prompt_request_tx: mpsc::Sender<PromptChannel> = router.get_address()
         .expect("Prompt channel undefined").clone();
 
@@ -108,8 +115,7 @@ pub fn create_task_worker(db_pool: Arc<DbPool>, router: &mut Router) {
                 }
             };
 
-            let TaskPayload{task_id, project_id, title, description} = payload;
-            let task_id = if let Some(task_id) = task_id { task_id } else { Uuid::new_v4() };
+            let InnerTaskPayload{user_id, task_id, project_id, title, description} = payload;
             let title = if let Some(title) = title { title } else {
                 match title_from_description(&description, &mut prompt_request_tx).await {
                     Some(title) => title,
@@ -128,10 +134,10 @@ pub fn create_task_worker(db_pool: Arc<DbPool>, router: &mut Router) {
                 }
             };
 
-            let user = match User::system_user(&mut conn) {
-                Ok(user) => user,
-                Err(_) => {
-                    tracing::error!("No system user configured!");
+            let user = match User::get(&mut conn, user_id) {
+                Some(user) => user,
+                None => {
+                    tracing::error!("Could not find user {}!", user_id);
                     continue;
                 }
             };
@@ -175,7 +181,7 @@ async fn create_task_handler(payload: TaskPayload,
     };
 
     // We explicitly ignore setting the task id from the api.
-    let TaskPayload{task_id: _, project_id, title, description} = payload;
+    let TaskPayload{project_id, title, description} = payload;
 
     let title = if let Some(title) = title { title } else {
         title_from_description(&description, &mut prompt_request_tx).await

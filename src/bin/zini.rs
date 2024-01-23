@@ -9,12 +9,13 @@ use subseq_util::{
     InnerConfig,
     tracing::setup_tracing,
     tables::establish_connection_pool,
-    api::{sessions, handle_rejection, init_session_store},
+    api::{sessions, handle_rejection, init_session_store, users},
     oidc::{init_client_pool, IdentityProvider, OidcCredentials}
 };
 use warp::{Filter, reject::Rejection};
 
 use zini::api::*;
+use zini::tables::User;
 use zini::events;
 
 
@@ -83,7 +84,7 @@ async fn main() {
     let assets = warp::path("assets").and(warp::fs::dir("dist/assets"));
 
     let routes = projects::routes(idp.clone(), session.clone(), pool.clone(), &mut router)
-        .or(users::routes(pool.clone(), &mut router))
+        .or(users::routes::<User>(pool.clone(), &mut router))
         .or(tasks::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
         .or(flows::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
         .or(voice::routes(idp.clone(), session.clone(), &mut router))

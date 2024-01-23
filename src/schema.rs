@@ -121,6 +121,21 @@ diesel::table! {
 
 pub mod auth {
     diesel::table! {
+        auth.metadata (user_id) {
+            user_id -> Uuid,
+            #[sql_name = "metadata"]
+            data -> Jsonb,
+        }
+    }
+
+    diesel::table! {
+        auth.portraits (user_id) {
+            user_id -> Uuid,
+            portrait -> Bytea,
+        }
+    }
+
+    diesel::table! {
         auth.user_id_accounts (user_id, username) {
             user_id -> Uuid,
             username -> Varchar,
@@ -137,9 +152,12 @@ pub mod auth {
         }
     }
 }
-pub use auth::{users, user_id_accounts};
+
+pub use auth::{users, user_id_accounts, portraits, metadata};
 
 
+diesel::joinable!(metadata -> users (user_id));
+diesel::joinable!(portraits -> users (user_id));
 diesel::joinable!(default_project_tags -> projects (project_id));
 diesel::joinable!(default_project_tags -> tags (tag_name));
 diesel::joinable!(flow_assignments -> flow_nodes (node_id));
@@ -177,6 +195,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     task_tags,
     task_watchers,
     tasks,
+    metadata,
+    portraits,
     user_id_accounts,
     users,
 );

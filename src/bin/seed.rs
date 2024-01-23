@@ -1,6 +1,7 @@
 use clap::Parser;
 use diesel::prelude::*;
 use diesel::result::QueryResult;
+use subseq_util::tables::UserTable;
 use uuid::Uuid;
 use zini::tables::*;
 
