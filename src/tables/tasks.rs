@@ -5,7 +5,6 @@ use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use subseq_util::api::AuthenticatedUser;
 use super::{Flow, FlowNode, ValidationErrorMessage, Project, User, FlowConnection};
 
 
@@ -293,19 +292,19 @@ impl Task {
 
     pub fn update(&mut self,
                   conn: &mut PgConnection,
-                  user: AuthenticatedUser,
+                  user_id: Uuid,
                   update: TaskUpdate) -> QueryResult<()> {
         match update {
             TaskUpdate::AssignOther{user_id} => self.assign_user(conn, user_id),
-            TaskUpdate::AssignSelf => self.assign_user(conn, user.id()),
+            TaskUpdate::AssignSelf => self.assign_user(conn, user_id),
             TaskUpdate::ChangeDescription { description } => self.set_description(conn, &description),
             TaskUpdate::ChangeTitle { title } => self.set_title(conn, &title),
             TaskUpdate::Link { task_id, link_type } => self.add_link(conn, task_id, link_type),
-            TaskUpdate::StopWatchingTask => self.rm_watcher(conn, user.id()),
+            TaskUpdate::StopWatchingTask => self.rm_watcher(conn, user_id),
             TaskUpdate::Tag { name } => self.add_tag(conn, &name),
             TaskUpdate::Transition { node_id } => self.transition(conn, node_id),
             TaskUpdate::Unassign => self.unassign_user(conn),
-            TaskUpdate::WatchTask => self.add_watcher(conn, user.id()),
+            TaskUpdate::WatchTask => self.add_watcher(conn, user_id),
             TaskUpdate::Undo => Ok(()),  // TODO
             TaskUpdate::Unlink { task_id } => self.rm_link(conn, task_id),
             TaskUpdate::Untag { name } => self.rm_tag(conn, &name)
@@ -349,7 +348,7 @@ impl Task {
 }
 crate::zini_table!(Task, crate::schema::tasks::dsl::tasks);
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum TaskUpdate {
     AssignOther{user_id: Uuid},
     AssignSelf,

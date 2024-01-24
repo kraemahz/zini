@@ -6,6 +6,9 @@ use uuid::Uuid;
 use subseq_util::tables::{UserTable, ValidationErrorMessage};
 
 subseq_util::create_user_base!();
+crate::zini_table!(UserMetadata, crate::schema::auth::metadata::dsl::metadata);
+crate::zini_table!(UserPortraits, crate::schema::auth::portraits::dsl::portraits);
+crate::zini_table!(UserIdAccount, crate::schema::auth::user_id_accounts::dsl::user_id_accounts);
 
 #[cfg(test)]
 mod test {

@@ -9,7 +9,7 @@ use subseq_util::{
     InnerConfig,
     tracing::setup_tracing,
     tables::establish_connection_pool,
-    api::{sessions, handle_rejection, init_session_store, users},
+    api::{sessions, handle_rejection, init_session_store, users as util_users},
     oidc::{init_client_pool, IdentityProvider, OidcCredentials}
 };
 use warp::{Filter, reject::Rejection};
@@ -64,6 +64,7 @@ async fn main() {
     let mut router = Router::new();
     events::emit_events(&prism_url, &mut router, pool.clone());
     tasks::create_task_worker(pool.clone(), &mut router);
+    tasks::update_task_worker(pool.clone(), &mut router);
 
     let log_requests = warp::log::custom(|info| {
         tracing::info!("{} {} {} {}",
@@ -84,7 +85,8 @@ async fn main() {
     let assets = warp::path("assets").and(warp::fs::dir("dist/assets"));
 
     let routes = projects::routes(idp.clone(), session.clone(), pool.clone(), &mut router)
-        .or(users::routes::<User>(pool.clone(), &mut router))
+        .or(util_users::routes::<User>(idp.clone(), session.clone(), pool.clone(), &mut router))
+        .or(users::routes(idp.clone(), session.clone(), pool.clone()))
         .or(tasks::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
         .or(flows::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
         .or(voice::routes(idp.clone(), session.clone(), &mut router))

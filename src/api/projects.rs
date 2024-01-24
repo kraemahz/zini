@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Deserialize;
+use subseq_util::api::sessions::store_auth_cookie;
 use subseq_util::{api::*, Router, tables::UserTable};
 use subseq_util::oidc::IdentityProvider;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 use warp::{Reply, Rejection, Filter};
-use warp_sessions::MemoryStore;
+use warp_sessions::{MemoryStore, SessionWithStore};
 
 use crate::tables::{DbPool, Project, Flow, User};
 
@@ -20,8 +21,9 @@ pub struct ProjectPayload {
 
 pub async fn create_project_handler(payload: ProjectPayload,
                                     auth: AuthenticatedUser,
+                                    session: SessionWithStore<MemoryStore>,
                                     db_pool: Arc<DbPool>,
-                                    sender: broadcast::Sender<Project>) -> Result<impl Reply, Rejection> {
+                                    sender: broadcast::Sender<Project>) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
@@ -49,26 +51,28 @@ pub async fn create_project_handler(payload: ProjectPayload,
     sender.send(project.clone()).ok();
     let mut dict = HashMap::new();
     dict.insert("project", project.id.to_string());
-    Ok(warp::reply::json(&dict))
+    Ok((warp::reply::json(&dict), session))
 }
 
 const PAGE_SIZE: u32 = 10;
 
 pub async fn list_projects_handler(page_number: u32,
                                    _auth: AuthenticatedUser,
-                                   db_pool: Arc<DbPool>) -> Result<impl Reply, Rejection> {
+                                   session: SessionWithStore<MemoryStore>,
+                                   db_pool: Arc<DbPool>) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
     };
     let projects = Project::list(&mut conn, page_number, PAGE_SIZE);
-    Ok(warp::reply::json(&projects))
+    Ok((warp::reply::json(&projects), session))
 }
 
 
 pub async fn get_project_handler(project_id: String,
                                  _auth: AuthenticatedUser,
-                                 db_pool: Arc<DbPool>) -> Result<impl Reply, Rejection> {
+                                 session: SessionWithStore<MemoryStore>,
+                                 db_pool: Arc<DbPool>) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
@@ -86,7 +90,7 @@ pub async fn get_project_handler(project_id: String,
         }
     };
 
-    Ok(warp::reply::json(&project))
+    Ok((warp::reply::json(&project), session))
 }
 
 pub fn routes(idp: Option<Arc<IdentityProvider>>,
@@ -98,22 +102,31 @@ pub fn routes(idp: Option<Arc<IdentityProvider>>,
     let create_project = warp::post()
         .and(warp::body::json())
         .and(authenticate(idp.clone(), session.clone()))
+        .and(warp_sessions::request::with_session(session.clone(), None))
         .and(with_db(pool.clone()))
         .and(with_broadcast(project_tx))
-        .and_then(create_project_handler);
+        .and_then(create_project_handler)
+        .untuple_one()
+        .and_then(store_auth_cookie);
 
     let list_projects = warp::path("list")
         .and(warp::get())
         .and(warp::path::param())
         .and(authenticate(idp.clone(), session.clone()))
+        .and(warp_sessions::request::with_session(session.clone(), None))
         .and(with_db(pool.clone()))
-        .and_then(list_projects_handler);
+        .and_then(list_projects_handler)
+        .untuple_one()
+        .and_then(store_auth_cookie);
 
     let get_project = warp::get()
         .and(warp::path::param())
         .and(authenticate(idp.clone(), session.clone()))
+        .and(warp_sessions::request::with_session(session.clone(), None))
         .and(with_db(pool.clone()))
-        .and_then(get_project_handler);
+        .and_then(get_project_handler)
+        .untuple_one()
+        .and_then(store_auth_cookie);
 
     warp::path("project")
         .and(create_project

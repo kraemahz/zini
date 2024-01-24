@@ -11,7 +11,7 @@ use subseq_util::tables::{DbPool, UserTable};
 use tokio::spawn;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::api::tasks::InnerTaskPayload;
+use crate::api::tasks::{InnerTaskPayload, InnerUpdateTaskPayload};
 use crate::api::voice::{
     SpeechToText,
     SpeechToTextResponse,
@@ -36,7 +36,8 @@ const USER_UPDATED_BEAM: &str = "urn:subseq.io:oidc:user:updated";
 const JOB_RESULT_BEAM: &str = "urn:subseq.io:builds:job:result";
 const JOB_CREATED_BEAM: &str = "urn:subseq.io:builds:k8s:job:created";
 
-const CREATE_TASK_BEAM: &str = "urn:subseq.io:tasks:task";
+const CREATE_TASK_BEAM: &str = "urn:subseq.io:tasks:task:create";
+const UPDATE_TASK_BEAM: &str = "urn:subseq.io:tasks:task:update";
 const TASK_CREATED_BEAM: &str = "urn:subseq.io:tasks:task:created";
 const TASK_UPDATED_BEAM: &str = "urn:subseq.io:tasks:task:updated";
 const TASK_ASSIGNEE_BEAM: &str = "urn:subseq.io:tasks:task:assignee:changed";
@@ -74,6 +75,7 @@ async fn setup_task_beams(client: &mut AsyncClient) {
     client.add_beam(TASK_STATE_BEAM).await.expect("Failed setting up client");
 
     client.subscribe(CREATE_TASK_BEAM, None).await.expect("Failed subscribing");
+    client.subscribe(UPDATE_TASK_BEAM, None).await.expect("Failed subscribing");
 }
 
 
@@ -134,6 +136,7 @@ struct WaveletHandler {
     job_created_tx: broadcast::Sender<Job>,
     user_created_tx: broadcast::Sender<UserCreated>,
     create_task_tx: broadcast::Sender<InnerTaskPayload>,
+    update_task_tx: broadcast::Sender<InnerUpdateTaskPayload>,
     prompt_requests: PromptResponseCollection,
     voice_requests: VoiceResponseCollection,
     voice_beam: String,
@@ -206,6 +209,18 @@ impl Future for WaveletHandler {
                     this.create_task_tx.send(result).ok();
                 }
             }
+            UPDATE_TASK_BEAM => {
+                for photon in photons {
+                    let result: InnerUpdateTaskPayload = match serde_json::from_slice(&photon.payload) {
+                        Ok(ok) => ok,
+                        Err(_) => {
+                            tracing::error!("Received invalid Photon on {}", CREATE_TASK_BEAM);
+                            continue;
+                        }
+                    };
+                    this.update_task_tx.send(result).ok();
+                }
+            }
             b => {
                 if b == this.voice_beam {
                     for photon in photons {
@@ -248,6 +263,7 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
     // Jobs
     let job_tx: broadcast::Sender<Job> = router.announce();
     let create_task_tx: broadcast::Sender<InnerTaskPayload> = router.announce();
+    let update_task_tx: broadcast::Sender<InnerUpdateTaskPayload> = router.announce();
     let job_result_tx: broadcast::Sender<JobResult> = router.announce();
     let user_created_tx: broadcast::Sender<UserCreated> = router.announce();
 
@@ -268,6 +284,7 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
                 job_created_tx: job_tx.clone(),
                 user_created_tx: user_created_tx.clone(),
                 create_task_tx: create_task_tx.clone(),
+                update_task_tx: update_task_tx.clone(),
                 prompt_requests: handler_requests.clone(),
                 voice_requests: handler_voice_requests.clone(),
                 voice_beam: voice_beam.clone(),

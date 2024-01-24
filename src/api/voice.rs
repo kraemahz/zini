@@ -12,6 +12,7 @@ use symphonia::core::audio::SampleBuffer;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::errors::Error as SymError;
 use subseq_util::Router;
+use subseq_util::api::sessions::store_auth_cookie;
 use subseq_util::api::{authenticate, AuthenticatedUser};
 use subseq_util::oidc::IdentityProvider;
 use symphonia::core::probe::Hint;
@@ -19,7 +20,7 @@ use tokio::{sync::{broadcast, mpsc, oneshot}, task::spawn, time::timeout};
 use uuid::Uuid;
 use warp::filters::ws::{Message, WebSocket};
 use warp::{Filter, Reply, Rejection};
-use warp_sessions::MemoryStore;
+use warp_sessions::{MemoryStore, SessionWithStore};
 
 #[derive(Clone, Debug)]
 pub struct AudioData {
@@ -298,12 +299,15 @@ pub fn routes(
     let instruction_tx: broadcast::Sender<Instruction> = router.announce();
 
     let audio_ws = warp::path("audio")
-        .and(authenticate(idp, session))
+        .and(authenticate(idp, session.clone()))
+        .and(warp_sessions::request::with_session(session.clone(), None))
         .and(warp::ws())
-        .map(move |auth: AuthenticatedUser, ws: warp::ws::Ws| {
+        .map(move |auth: AuthenticatedUser, session: SessionWithStore<MemoryStore>, ws: warp::ws::Ws| {
             let speech_text_tx = speech_text_tx.clone();
             let instruction_tx = instruction_tx.clone();
-            ws.on_upgrade(move |socket| proxy_audio_socket(auth, socket, speech_text_tx, instruction_tx))
-        });
+            (ws.on_upgrade(move |socket| proxy_audio_socket(auth, socket, speech_text_tx, instruction_tx)), session)
+        })
+        .untuple_one()
+        .and_then(store_auth_cookie);
     return audio_ws;
 }

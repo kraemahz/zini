@@ -23,12 +23,10 @@ fn main() -> QueryResult<()> {
 }
 
 fn seed_data(conn: &mut PgConnection, user_id: Uuid, user_email: String) -> QueryResult<()> {
-    if User::get(conn, user_id).is_some() {
-        println!("Base user exists, exiting");
-        return Ok(());
-    }
-
-    let user = User::create(conn, user_id, &user_email, None)?;
+    let user = match User::get(conn, user_id) {
+        Some(user) => user,
+        None => User::create(conn, user_id, &user_email, None)?
+    };
 
     let entry_node = FlowNode::create(conn, "OPEN")?;
     let exit_node = FlowNode::create(conn, "CLOSED")?;

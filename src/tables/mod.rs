@@ -6,7 +6,7 @@ mod users;
 pub use self::flows::{Flow, FlowAssignment, FlowNode, FlowConnection, FlowExit, Graph};
 pub use self::projects::Project;
 pub use self::tasks::{Task, Tag, TaskFlow, TaskLink, TaskLinkType, TaskUpdate};
-pub use self::users::{User, UserIdAccount};
+pub use self::users::{User, UserIdAccount, UserMetadata, UserPortraits};
 pub use subseq_util::tables::{ DbPool, ValidationErrorMessage };
 
 #[macro_export]
