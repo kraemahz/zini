@@ -300,7 +300,6 @@ pub fn routes(
 
     let audio_ws = warp::path("audio")
         .and(authenticate(idp, session.clone()))
-        .and(warp_sessions::request::with_session(session.clone(), None))
         .and(warp::ws())
         .map(move |auth: AuthenticatedUser, session: SessionWithStore<MemoryStore>, ws: warp::ws::Ws| {
             let speech_text_tx = speech_text_tx.clone();

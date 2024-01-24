@@ -102,19 +102,19 @@ pub fn routes(
         .and(warp::path("list"))
         .and(warp::path::param())
         .and(authenticate(idp.clone(), session.clone()))
-        .and(warp_sessions::request::with_session(session.clone(), None))
         .and(with_db(pool.clone()))
         .and_then(list_users_handler)
         .untuple_one()
         .and_then(store_auth_cookie);
+
     let get_image = warp::path("portrait")
         .and(warp::get())
         .and(warp::path::param())
         .and(authenticate(idp.clone(), session.clone()))
-        .and(warp_sessions::request::with_session(session.clone(), None))
         .and(with_db(pool.clone()))
         .and_then(get_image)
         .untuple_one()
         .and_then(store_auth_cookie);
+
     list_users.or(get_image)
 }

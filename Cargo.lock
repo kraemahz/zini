@@ -2466,7 +2466,7 @@ checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
 [[package]]
 name = "subseq_util"
 version = "0.1.2"
-source = "git+https://github.com/kraemahz/subseq_util.git?branch=main#7beb6cbe5f9007c18f014747b88ca1d95a27d020"
+source = "git+https://github.com/kraemahz/subseq_util.git?branch=main#ec05aebe8177a9d72bd72796a45b126bc25fb9b9"
 dependencies = [
  "anyhow",
  "anymap",

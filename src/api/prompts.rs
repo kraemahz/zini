@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 use warp::Filter;
 use warp::{Reply, reject::Rejection};
-use warp_sessions::MemoryStore;
+use warp_sessions::{MemoryStore, SessionWithStore};
 
 use super::with_channel;
 
@@ -86,6 +86,7 @@ fn build_architect_prompt(payload: &ArchitectPayload) -> String {
 async fn test_architect_handler(
     payload: ArchitectPayload,
     auth: AuthenticatedUser,
+    _session: SessionWithStore<MemoryStore>,
     prompt_request_tx: mpsc::Sender<PromptChannel>) -> Result<impl Reply, Rejection> {
 
     const ARCHITECT_PROMPT_ID: &str = "architect_BKpM78";
