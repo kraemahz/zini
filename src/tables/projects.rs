@@ -69,6 +69,7 @@ crate::zini_table!(Project, crate::schema::projects::dsl::projects);
 mod test {
     use super::*;
     use subseq_util::tables::harness::{to_pg_db_name, DbHarness};
+    use subseq_util::tables::UserTable;
     use function_name::named;
     use crate::tables::test::MIGRATIONS;
 

@@ -551,6 +551,7 @@ mod test {
     use super::*;
     use uuid::Uuid;
     use subseq_util::tables::harness::{to_pg_db_name, DbHarness};
+    use subseq_util::tables::UserTable;
     use function_name::named;
     use crate::tables::test::MIGRATIONS;
 
