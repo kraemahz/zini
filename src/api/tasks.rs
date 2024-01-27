@@ -9,8 +9,6 @@ use subseq_util::api::sessions::store_auth_cookie;
 use subseq_util::{api::*, Router, tables::UserTable};
 use subseq_util::oidc::IdentityProvider;
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tokio::sync::broadcast::error::RecvError;
-use tokio::task::spawn;
 use tokio::time::timeout;
 use uuid::Uuid;
 use warp::{Filter, Reply, Rejection};
@@ -29,7 +27,7 @@ use crate::tables::{
     User,
 };
 use super::with_channel;
-use super::prompts::{PromptChannel, PromptResponseType, PromptRequest, PromptResponse};
+use super::prompts::{PromptTx, PromptRxPayload, PromptResponseType, InitializePromptChannel};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TaskPayload {
@@ -67,35 +65,32 @@ pub struct DescriptionJson {
 }
 
 async fn title_from_description(
-    project_id: Uuid,
-    user_id: Uuid,
     description: &str,
-    prompt_request_tx: &mut mpsc::Sender<PromptChannel>) -> Option<String>
+    prompt_request_tx: &mut mpsc::Sender<InitializePromptChannel>) -> Option<String>
 {
-    let (tx, rx) = oneshot::channel();
-    let request = PromptRequest{
-        request_id: Uuid::new_v4(),
-        project_id,
-        user_id,
-        prompt_id: "tools_aNDkkK".into(),
-        prompt: description.to_string()
-    };
-    if prompt_request_tx.send((request, tx)).await.is_err() {
+    let (request_tx, request_rx) = mpsc::channel(1);
+    let (response_tx, mut response_rx) = mpsc::unbounded_channel();
+    let request = PromptTx::new_stream(description.to_string());
+    if prompt_request_tx.send((request.stream_id, request_rx, response_tx)).await.is_err() {
         return None;
     }
-    let response = match timeout(Duration::from_secs(10), rx).await {
-        Ok(Ok(response)) => response,
+    if request_tx.send(request).await.is_err() {
+        return None;
+    }
+
+    let response = match timeout(Duration::from_secs(10), response_rx.recv()).await {
+        Ok(Some(response)) => response,
         Err(_) => {
             tracing::warn!("Timed out waiting for title");
             return None;
         }
-        Ok(Err(_)) => {
+        Ok(None) => {
             return None;
         }
     };
-    let PromptResponse{request_id: _, response, error} = response;
+
     match response {
-        Some(PromptResponseType::Json(message)) => {
+        PromptRxPayload::Close(PromptResponseType::Json(message)) => {
             match serde_json::from_value::<TitleJson>(message) {
                 Ok(title) => Some(title.title),
                 Err(err) => {
@@ -104,162 +99,22 @@ async fn title_from_description(
                 }
             }
         }
-        Some(PromptResponseType::Text(message)) => Some(message),
-        None => {
-            tracing::error!("Prompt error: {:?}", error);
+        PromptRxPayload::Close(PromptResponseType::Text(message)) => Some(message),
+        _ => {
+            tracing::error!("Unexpecte response");
             None
         }
     }
 }
 
-pub fn update_task_worker(db_pool: Arc<DbPool>, router: &mut Router) {
-    let sender = router.announce::<TaskStatePayload>();
-    let mut receiver = router.subscribe::<InnerUpdateTaskPayload>();
-
-    spawn(async move {
-        loop {
-            let payload = receiver.recv().await;
-            let payload = match payload {
-                Ok(payload) => payload,
-                Err(RecvError::Lagged(n)) => {
-                    tracing::warn!("Missed {} messages on InnerUpdateTaskPayload!", n);
-                    continue;
-                }
-                Err(_) => {
-                    break;
-                }
-            };
-            let InnerUpdateTaskPayload{user_id, task_id, update} = payload;
-
-            let mut conn = match db_pool.get() {
-                Ok(conn) => conn,
-                Err(_) => {
-                    tracing::error!("Database error");
-                    continue;
-                }
-            };
-
-            let mut task = match Task::get(&mut conn, task_id) {
-                Some(task) => task,
-                None => {
-                    tracing::warn!("Task not found: {}", task_id);
-                    continue;
-                }
-            };
-
-            task.update(&mut conn, user_id, update).ok();
-            let payload = match TaskStatePayload::build(&mut conn, task) {
-                Ok(task) => task,
-                Err(_) => {
-                    tracing::warn!("Could not build TaskStatePayload");
-                    continue;
-                },
-            };
-            sender.send(payload).ok();
-        }
-    });
-}
-
-pub fn create_task_worker(db_pool: Arc<DbPool>, router: &mut Router) {
-    let sender = router.announce::<Task>();
-    let mut receiver = router.subscribe::<InnerTaskPayload>();
-    let mut prompt_request_tx: mpsc::Sender<PromptChannel> = router.get_address()
-        .expect("Prompt channel undefined").clone();
-
-    spawn(async move {
-        loop {
-            let payload = receiver.recv().await;
-            let payload = match payload {
-                Ok(payload) => payload,
-                Err(RecvError::Lagged(n)) => {
-                    tracing::warn!("Missed {} messages on InnerTaskPayload!", n);
-                    continue;
-                }
-                Err(_) => {
-                    break;
-                }
-            };
-
-            let InnerTaskPayload{user_id, task_id, project_id, title, description, tags, components} = payload;
-            let title = if let Some(title) = title { title } else {
-                match title_from_description(project_id, user_id, &description, &mut prompt_request_tx).await {
-                    Some(title) => title,
-                    None => {
-                        tracing::error!("Failed to create title for issue");
-                        continue;
-                    }
-                }
-            };
-
-            let mut conn = match db_pool.get() {
-                Ok(conn) => conn,
-                Err(_) => {
-                    tracing::error!("Database error");
-                    continue;
-                }
-            };
-
-            let user = match User::get(&mut conn, user_id) {
-                Some(user) => user,
-                None => {
-                    tracing::error!("Could not find user {}!", user_id);
-                    continue;
-                }
-            };
-
-            let mut project = match Project::get(&mut conn, project_id) {
-                Some(project) => project,
-                None => {
-                    tracing::error!("No such project: {}", project_id);
-                    continue;
-                }
-            };
-
-            let task = match Task::create(
-                &mut conn,
-                task_id,
-                &mut project,
-                &title,
-                &description,
-                &user,
-            ) {
-                Ok(task) => task,
-                Err(_) => {
-                    tracing::error!("Failed to create task");
-                    continue;
-                }
-            };
-            sender.send(task.clone()).ok();
-            for tag in tags {
-                let label = format!("{{\"label\": \"{}\"}}", tag);
-                task.add_tag(&mut conn, &label).ok();
-            }
-            for component in components {
-                let component = format!("{{\"component\": \"{}\"}}", component);
-                task.add_tag(&mut conn, &component).ok();
-            }
-        }
-    });
-}
-
-
-async fn create_task_handler(payload: TaskPayload,
-                             auth: AuthenticatedUser,
-                             session: SessionWithStore<MemoryStore>,
-                             db_pool: Arc<DbPool>,
-                             mut prompt_request_tx: mpsc::Sender<PromptChannel>,
-                             sender: broadcast::Sender<Task>) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
+pub async fn create_task(db_pool: Arc<DbPool>,
+                     user_id: Uuid,
+                     project_id: Uuid,
+                     title: String,
+                     description: String) -> Result<Task, Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
-    };
-
-    // We explicitly ignore setting the task id from the api.
-    let TaskPayload{project_id, title, description} = payload;
-
-    let title = if let Some(title) = title { title } else {
-        title_from_description(project_id, auth.id(), &description, &mut prompt_request_tx).await
-            .ok_or_else(|| warp::reject::custom(InvalidConfigurationError{}))?
     };
 
     let mut project = match Project::get(&mut conn, project_id) {
@@ -267,26 +122,47 @@ async fn create_task_handler(payload: TaskPayload,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
 
-    let user = match User::get(&mut conn, auth.id()) {
+    let user = match User::get(&mut conn, user_id) {
         Some(user) => user,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
 
-    let task = match Task::create(
+    Task::create(
         &mut conn,
         Uuid::new_v4(),
         &mut project,
         &title,
         &description,
         &user,
-    ) {
-        Ok(task) => task,
-        Err(err) => {
-            tracing::error!("Task creation failed: {:?}", err);
-            return Err(warp::reject::custom(ConflictError{}));
-        }
+    ).map_err(|err| {
+        tracing::error!("Task creation failed: {:?}", err);
+        warp::reject::custom(ConflictError{})
+    })
+}
+
+async fn create_task_handler(payload: TaskPayload,
+                             auth: AuthenticatedUser,
+                             session: SessionWithStore<MemoryStore>,
+                             db_pool: Arc<DbPool>,
+                             mut prompt_request_tx: mpsc::Sender<InitializePromptChannel>,
+                             sender: broadcast::Sender<Task>) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
+    // We explicitly ignore setting the task id from the api.
+    let TaskPayload{project_id, title, description} = payload;
+    let title = if let Some(title) = title { title } else {
+        title_from_description(&description, &mut prompt_request_tx).await
+            .ok_or_else(|| warp::reject::custom(InvalidConfigurationError{}))?
     };
+    let task = create_task(db_pool.clone(),
+                           auth.id(),
+                           project_id,
+                           title,
+                           description).await?;
     sender.send(task.clone()).ok();
+
+    let mut conn = match db_pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Err(warp::reject::custom(DatabaseError{})),
+    };
     let payload = match TaskStatePayload::build(&mut conn, task) {
         Ok(task) => task,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
@@ -296,13 +172,13 @@ async fn create_task_handler(payload: TaskPayload,
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskStatePayload {
-    task: Task,
-    tags: Vec<String>,
-    watchers: Vec<User>,
-    state: FlowNode,
-    links_out: Vec<TaskLink>,
-    links_in: Vec<TaskLink>,
-    valid_transitions: Vec<FlowNode>
+    pub task: Task,
+    pub tags: Vec<String>,
+    pub watchers: Vec<User>,
+    pub state: FlowNode,
+    pub links_out: Vec<TaskLink>,
+    pub links_in: Vec<TaskLink>,
+    pub valid_transitions: Vec<FlowNode>
 }
 
 impl TaskStatePayload {
@@ -318,23 +194,13 @@ impl TaskStatePayload {
     }
 }
 
-async fn update_task_handler(
-    task_id: String,
-    payload: TaskUpdate,
-    auth: AuthenticatedUser,
-    session: SessionWithStore<MemoryStore>,
-    db_pool: Arc<DbPool>,
-    sender: broadcast::Sender<TaskStatePayload>
-) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
+pub async fn update_task(db_pool: Arc<DbPool>,
+                     user_id: Uuid,
+                     task_id: Uuid,
+                     update: TaskUpdate) -> Result<TaskStatePayload, Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
-    };
-    let task_id = match Uuid::parse_str(&task_id) {
-        Ok(task_id) => task_id,
-        Err(_) => {
-            return Err(warp::reject::custom(ParseError{}));
-        }
     };
     let mut task = match Task::get(&mut conn, task_id) {
         Some(task) => task,
@@ -342,7 +208,7 @@ async fn update_task_handler(
             return Err(warp::reject::custom(NotFoundError{}));
         }
     };
-    match task.update(&mut conn, auth.id(), payload) {
+    match task.update(&mut conn, user_id, update) {
         Ok(state) => state,
         Err(err) => {
             tracing::warn!("Update error: {}", err);
@@ -350,13 +216,21 @@ async fn update_task_handler(
         }
     };
 
-    let task_state = match TaskStatePayload::build(&mut conn, task) {
-        Ok(state) => state,
-        Err(err) => {
-            tracing::warn!("Payload build error: {}", err);
-            return Err(warp::reject::custom(DatabaseError{}));
-        }
-    };
+    TaskStatePayload::build(&mut conn, task).map_err(|err| {
+        tracing::warn!("Payload build error: {}", err);
+        warp::reject::custom(DatabaseError{})
+    })
+}
+
+async fn update_task_handler(
+    task_id: Uuid,
+    payload: TaskUpdate,
+    auth: AuthenticatedUser,
+    session: SessionWithStore<MemoryStore>,
+    db_pool: Arc<DbPool>,
+    sender: broadcast::Sender<TaskStatePayload>
+) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
+    let task_state = update_task(db_pool.clone(), auth.id(), task_id, payload).await?;
     sender.send(task_state.clone()).ok();
     Ok((warp::reply::json(&task_state), session))
 }
@@ -393,9 +267,9 @@ async fn get_task_handler(
 
 #[derive(Deserialize)]
 pub struct QueryPayload {
-    page: u32,
-    page_size: u32,
-    query: HashMap<String, String>
+    pub page: u32,
+    pub page_size: u32,
+    pub query: HashMap<String, String>
 }
 
 #[derive(Serialize)]
@@ -436,15 +310,12 @@ impl DenormalizedTask {
 
 #[derive(Serialize)]
 pub struct QueryReply {
-    tasks: Vec<DenormalizedTask>
+    pub tasks: Vec<DenormalizedTask>
 }
 
-async fn filter_tasks_handler(
-    payload: QueryPayload,
-    _auth: AuthenticatedUser,
-    session: SessionWithStore<MemoryStore>,
-    db_pool: Arc<DbPool>
-) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
+pub type QueryChannel = (QueryPayload, oneshot::Sender<Result<QueryReply, Rejection>>);
+
+pub async fn filter_tasks(db_pool: Arc<DbPool>, payload: QueryPayload) -> Result<QueryReply, Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
@@ -457,8 +328,16 @@ async fn filter_tasks_handler(
         denorm_tasks.push(denorm_task);
     }
 
-    let reply = QueryReply{tasks: denorm_tasks};
-    Ok((warp::reply::json(&reply), session))
+    Ok(QueryReply{tasks: denorm_tasks})
+}
+
+async fn filter_tasks_handler(
+    payload: QueryPayload,
+    _auth: AuthenticatedUser,
+    session: SessionWithStore<MemoryStore>,
+    db_pool: Arc<DbPool>
+) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
+    Ok((warp::reply::json(&filter_tasks(db_pool.clone(), payload).await?), session))
 }
 
 pub fn routes(idp: Option<Arc<IdentityProvider>>,
@@ -467,7 +346,7 @@ pub fn routes(idp: Option<Arc<IdentityProvider>>,
               router: &mut Router,) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     let task_tx: broadcast::Sender<Task> = router.announce();
     let task_update_tx: broadcast::Sender<TaskStatePayload> = router.announce();
-    let prompt_request_tx: mpsc::Sender<PromptChannel> = router.get_address()
+    let prompt_request_tx: mpsc::Sender<InitializePromptChannel> = router.get_address()
         .expect("No prompt request channel defined").clone();
 
     let create_task = warp::post()

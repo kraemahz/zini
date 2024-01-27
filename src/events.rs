@@ -11,7 +11,7 @@ use subseq_util::tables::{DbPool, UserTable};
 use tokio::spawn;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::api::tasks::{InnerTaskPayload, InnerUpdateTaskPayload};
+use crate::api::prompts::{InitializePromptChannel, PromptTx, PromptRx};
 use crate::api::voice::{
     SpeechToText,
     SpeechToTextResponse,
@@ -22,7 +22,7 @@ use crate::{
     interop::{Job, JobResult},
     tables::{Project, Task, Flow, Graph, User},
     api::tasks::TaskStatePayload,
-    api::prompts::{PromptRequest, PromptResponse, PromptResponseCollection}
+    api::prompts::PromptResponseCollection
 };
 
 
@@ -36,15 +36,11 @@ const USER_UPDATED_BEAM: &str = "urn:subseq.io:oidc:user:updated";
 const JOB_RESULT_BEAM: &str = "urn:subseq.io:builds:job:result";
 const JOB_CREATED_BEAM: &str = "urn:subseq.io:builds:k8s:job:created";
 
-const CREATE_TASK_BEAM: &str = "urn:subseq.io:tasks:task:create";
-const UPDATE_TASK_BEAM: &str = "urn:subseq.io:tasks:task:update";
+// Task Broadcast
 const TASK_CREATED_BEAM: &str = "urn:subseq.io:tasks:task:created";
 const TASK_UPDATED_BEAM: &str = "urn:subseq.io:tasks:task:updated";
 const TASK_ASSIGNEE_BEAM: &str = "urn:subseq.io:tasks:task:assignee:changed";
 const TASK_STATE_BEAM: &str = "urn:subseq.io:tasks:task:state:changed";
-
-const PROMPT_REQUEST_BEAM: &str = "urn:subseq.io:tasks:prompt:request";
-const PROMPT_RESPONSE_BEAM: &str = "urn:subseq.io:tasks:prompt:response";
 
 const PROJECT_CREATED_BEAM: &str = "urn:subseq.io:tasts:project:created";
 const PROJECT_UPDATED_BEAM: &str = "urn:subseq.io:tasks:project:updated";
@@ -73,17 +69,7 @@ async fn setup_task_beams(client: &mut AsyncClient) {
     client.add_beam(TASK_UPDATED_BEAM).await.expect("Failed setting up client");
     client.add_beam(TASK_ASSIGNEE_BEAM).await.expect("Failed setting up client");
     client.add_beam(TASK_STATE_BEAM).await.expect("Failed setting up client");
-
-    client.subscribe(CREATE_TASK_BEAM, None).await.expect("Failed subscribing");
-    client.subscribe(UPDATE_TASK_BEAM, None).await.expect("Failed subscribing");
 }
-
-
-async fn setup_prompt_beams(client: &mut AsyncClient) {
-    client.add_beam(PROMPT_REQUEST_BEAM).await.expect("Failed setting up client");
-    client.subscribe(PROMPT_RESPONSE_BEAM, None).await.expect("Failed subscribing");
-}
-
 
 async fn setup_project_beams(client: &mut AsyncClient) {
     client.add_beam(PROJECT_CREATED_BEAM).await.expect("Failed setting up client");
@@ -96,18 +82,26 @@ async fn setup_flow_beams(client: &mut AsyncClient) {
     client.add_beam(FLOW_UPDATED_BEAM).await.expect("Failed setting up client");
 }
 
-async fn gen_voice_beams() -> (String, String) {
-    let rand_id: String = {
-        rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(10)
-            .map(char::from)
-            .collect()
-    };
+
+fn gen_rand() -> String {
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(10)
+        .map(char::from)
+        .collect()
+}
+
+fn gen_voice_beams() -> (String, String) {
     let voice_stream: &str = "urn:subseq.io:voice:audio:request";
-    let text_stream: String = format!("urn:subseq.io:voice:text:{}", rand_id);
+    let text_stream: String = format!("urn:subseq.io:voice:text:{}", gen_rand());
 
     (voice_stream.to_string(), text_stream)
+}
+
+fn gen_prompt_beams() -> (String, String) {
+    let prompt_tx_stream: &str = "urn:subseq.io:prompt:stream:input";
+    let prompt_rx_stream: String = format!("urn:subseq.io:prompt:stream:{}", gen_rand());
+    (prompt_tx_stream.to_string(), prompt_rx_stream)
 }
 
 #[derive(Clone)]
@@ -129,15 +123,12 @@ pub fn create_users_from_events(mut user_created_rx: broadcast::Receiver<UserCre
     });
 }
 
-
-
 struct WaveletHandler {
     job_result_tx: broadcast::Sender<JobResult>,
     job_created_tx: broadcast::Sender<Job>,
     user_created_tx: broadcast::Sender<UserCreated>,
-    create_task_tx: broadcast::Sender<InnerTaskPayload>,
-    update_task_tx: broadcast::Sender<InnerUpdateTaskPayload>,
     prompt_requests: PromptResponseCollection,
+    prompt_beam: String,
     voice_requests: VoiceResponseCollection,
     voice_beam: String,
     wavelet: Wavelet,
@@ -159,18 +150,6 @@ impl Future for WaveletHandler {
                         }
                     };
                     this.job_result_tx.send(result).ok();
-                }
-            }
-            PROMPT_RESPONSE_BEAM => {
-                for photon in photons {
-                    let result: PromptResponse = match serde_json::from_slice(&photon.payload) {
-                        Ok(ok) => ok,
-                        Err(_) => {
-                            tracing::error!("Received invalid Photon on {}", PROMPT_RESPONSE_BEAM);
-                            continue;
-                        }
-                    };
-                    this.prompt_requests.send_response(result);
                 }
             }
             JOB_CREATED_BEAM => {
@@ -197,30 +176,6 @@ impl Future for WaveletHandler {
                     this.user_created_tx.send(UserCreated(result)).ok();
                 }
             }
-            CREATE_TASK_BEAM => {
-                for photon in photons {
-                    let result: InnerTaskPayload = match serde_json::from_slice(&photon.payload) {
-                        Ok(ok) => ok,
-                        Err(_) => {
-                            tracing::error!("Received invalid Photon on {}", CREATE_TASK_BEAM);
-                            continue;
-                        }
-                    };
-                    this.create_task_tx.send(result).ok();
-                }
-            }
-            UPDATE_TASK_BEAM => {
-                for photon in photons {
-                    let result: InnerUpdateTaskPayload = match serde_json::from_slice(&photon.payload) {
-                        Ok(ok) => ok,
-                        Err(_) => {
-                            tracing::error!("Received invalid Photon on {}", CREATE_TASK_BEAM);
-                            continue;
-                        }
-                    };
-                    this.update_task_tx.send(result).ok();
-                }
-            }
             b => {
                 if b == this.voice_beam {
                     for photon in photons {
@@ -232,6 +187,17 @@ impl Future for WaveletHandler {
                             }
                         };
                         this.voice_requests.send_response(result);
+                    }
+                } else if b == this.prompt_beam {
+                    for photon in photons {
+                        let result: PromptRx = match serde_json::from_slice(&photon.payload) {
+                            Ok(ok) => ok,
+                            Err(_) => {
+                                tracing::error!("Received invalid Photon on {}", this.prompt_beam);
+                                continue;
+                            }
+                        };
+                        this.prompt_requests.send_response(result);
                     }
                 } else {
                     tracing::error!("Received unhandled Beam: {}", b);
@@ -262,30 +228,32 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
 
     // Jobs
     let job_tx: broadcast::Sender<Job> = router.announce();
-    let create_task_tx: broadcast::Sender<InnerTaskPayload> = router.announce();
-    let update_task_tx: broadcast::Sender<InnerUpdateTaskPayload> = router.announce();
     let job_result_tx: broadcast::Sender<JobResult> = router.announce();
     let user_created_tx: broadcast::Sender<UserCreated> = router.announce();
 
     // Prompts
-    let mut prompt_request_rx: mpsc::Receiver<(PromptRequest, oneshot::Sender<PromptResponse>)> = router.create_channel();
+    let (prompt_request_tx, mut prompt_request_rx) = mpsc::channel::<PromptTx>(1024);
+    let mut new_prompt_rx: mpsc::Receiver<InitializePromptChannel> = router.create_channel();
+
     let prompt_requests = PromptResponseCollection::new();
     let handler_requests = prompt_requests.clone();
 
     let uri = addr.parse::<Uri>().unwrap();
 
     spawn(async move {
-        let (voice_request_beam, voice_response_beam) = gen_voice_beams().await;
+        let (voice_request_beam, voice_response_beam) = gen_voice_beams();
+        let (prompt_request_beam, prompt_response_beam) = gen_prompt_beams();
+
         let voice_beam = voice_response_beam.clone();
+        let prompt_beam = prompt_response_beam.clone();
 
         let handle_tasks = move |wavelet: Wavelet| {
             WaveletHandler {
                 job_result_tx: job_result_tx.clone(),
                 job_created_tx: job_tx.clone(),
                 user_created_tx: user_created_tx.clone(),
-                create_task_tx: create_task_tx.clone(),
-                update_task_tx: update_task_tx.clone(),
                 prompt_requests: handler_requests.clone(),
+                prompt_beam: prompt_beam.clone(),
                 voice_requests: handler_voice_requests.clone(),
                 voice_beam: voice_beam.clone(),
                 wavelet
@@ -303,11 +271,12 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
 
         client.add_beam(&voice_request_beam).await.expect("Failed setting up client");
         client.subscribe(&voice_response_beam, None).await.expect("Failed subscribing");
+        client.add_beam(&prompt_request_beam).await.expect("Failed setting up client");
+        client.subscribe(&prompt_response_beam, None).await.expect("Failed subscribing");
 
         setup_user_beams(&mut client).await;
         setup_job_beams(&mut client).await;
         setup_task_beams(&mut client).await;
-        setup_prompt_beams(&mut client).await;
         setup_project_beams(&mut client).await;
         setup_flow_beams(&mut client).await;
 
@@ -323,11 +292,21 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
                         }
                     }
                 }
+                msg = new_prompt_rx.recv() => {
+                    if let Some((stream_id, mut rx, tx)) = msg {
+                        prompt_requests.insert(stream_id, tx);
+                        let msg_tx = prompt_request_tx.clone();
+                        spawn(async move {
+                            while let Some(msg) = rx.recv().await {
+                                msg_tx.send(msg).await.ok();
+                            }
+                        });
+                    }
+                }
                 msg = prompt_request_rx.recv() => {
-                    if let Some((msg, tx)) = msg {
-                        prompt_requests.insert(msg.request_id, tx);
+                    if let Some(msg) = msg {
                         let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit(PROMPT_REQUEST_BEAM, vec).await.is_err() {
+                        if client.emit(prompt_request_beam.clone(), vec).await.is_err() {
                             break;
                         }
                     }

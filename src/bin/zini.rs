@@ -63,8 +63,6 @@ async fn main() {
 
     let mut router = Router::new();
     events::emit_events(&prism_url, &mut router, pool.clone());
-    tasks::create_task_worker(pool.clone(), &mut router);
-    tasks::update_task_worker(pool.clone(), &mut router);
 
     let log_requests = warp::log::custom(|info| {
         tracing::info!("{} {} {} {}",
@@ -89,7 +87,6 @@ async fn main() {
         .or(users::routes(idp.clone(), session.clone(), pool.clone()))
         .or(tasks::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
         .or(flows::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
-        .or(voice::routes(idp.clone(), session.clone(), &mut router))
         .or(probe)
         .or(frontend)
         .or(ico)

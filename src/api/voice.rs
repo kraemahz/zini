@@ -3,24 +3,31 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use futures::FutureExt;
-use futures_util::stream::StreamExt;
-use futures_util::{pin_mut, sink::SinkExt};
 use rubato::{Resampler, SincFixedIn, SincInterpolationType, SincInterpolationParameters};
 use serde::{Serialize, Deserialize};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::errors::Error as SymError;
-use subseq_util::Router;
-use subseq_util::api::sessions::store_auth_cookie;
-use subseq_util::api::{authenticate, AuthenticatedUser};
-use subseq_util::oidc::IdentityProvider;
 use symphonia::core::probe::Hint;
-use tokio::{sync::{broadcast, mpsc, oneshot}, task::spawn, time::timeout};
+use tokio::{sync::{mpsc, oneshot}, task::spawn, time::timeout};
 use uuid::Uuid;
-use warp::filters::ws::{Message, WebSocket};
-use warp::{Filter, Reply, Rejection};
-use warp_sessions::{MemoryStore, SessionWithStore};
+
+use super::prompts::ChatCompletion;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum AudioContext {
+    Discover,
+    Search,
+    Instruct
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AudioContextResponse {
+    Search(String),
+    Instruct(ChatCompletion)
+}
+pub type AudioDataChannel = (AudioContext, AudioData);
+pub type AudioEventChannel = (SpeechToText, oneshot::Sender<SpeechToTextResponse>);
 
 #[derive(Clone, Debug)]
 pub struct AudioData {
@@ -63,13 +70,6 @@ pub struct SpeechToTextResponse {
     pub count: usize,
     pub payload: String,
     pub finalized: bool
-}
-
-#[derive(Clone, Debug)]
-pub struct Instruction {
-    pub auth_user: AuthenticatedUser,
-    pub instruction: String,
-    pub segments: Vec<usize>
 }
 
 pub fn decode_webm_bytes_to_pcm(payload: Vec<u8>) -> Result<(u32, Vec<f32>), SymError> {
@@ -139,18 +139,16 @@ pub fn resample_audio(input_pcm: Vec<f32>, from_rate: u32, to_rate: u32) -> Resu
 }
 
 pub fn create_audio_timing_task(
-    auth_user: AuthenticatedUser,
     text_tx: mpsc::Sender<SpeechToTextResponse>,
-    mut audio_rx: mpsc::Receiver<AudioData>,
-    audio_stream: mpsc::Sender<(SpeechToText, oneshot::Sender<SpeechToTextResponse>)>,
-    instruction_tx: broadcast::Sender<Instruction>
+    mut audio_rx: mpsc::Receiver<AudioDataChannel>,
+    audio_stream: mpsc::Sender<AudioEventChannel>,
 ) {
     const SPEECH_TIMEOUT: Duration = Duration::from_secs(2);
 
     spawn(async move {
         let mut n_messages: usize = 0;
         let mut stream: Option<Vec<u8>> = None;
-        let mut segments = Vec::new();
+        let mut _context = AudioContext::Discover;
 
         loop {
             let conversation_id: Uuid = Uuid::new_v4();
@@ -177,24 +175,15 @@ pub fn create_audio_timing_task(
                         };
                         n_messages += 1;
                         // TODO
-                        let segments: Vec<_> = segments.drain(..).collect();
                         let (tx, rx) = oneshot::channel();
                         if audio_stream.send((request, tx)).await.is_err() {
                             break;
                         }
 
                         let text_tx = text_tx.clone();
-                        let instruction_tx = instruction_tx.clone();
-                        let auth_user = auth_user.clone();
                         spawn(async move {
                             if let Ok(response) = rx.await {
-                                let instruction = Instruction {
-                                    auth_user,
-                                    instruction: response.payload.clone(),
-                                    segments
-                                };
-                                text_tx.send(response.clone()).await.ok();
-                                instruction_tx.send(instruction).ok();
+                                text_tx.send(response).await.ok();
                             }
                         });
                     }
@@ -202,67 +191,21 @@ pub fn create_audio_timing_task(
                 }
             };
 
-            if let Some(AudioData{payload, count}) = stt {
-                segments.push(count);
-
+            if let Some((new_context, AudioData{payload, count: _})) = stt {
                 stream = match stream.take() {
                     Some(mut audio) => {
                         audio.extend(payload);
                         Some(audio)
                     }
-                    None => Some(payload)
+                    None => {
+                        _context = new_context;
+                        Some(payload)
+                    }
                 };
             }
         }
         tracing::warn!("Speech to instructions exited");
     });
-}
-
-const AUDIO_TIMING_BUFFER: usize = 1024;
-
-async fn proxy_audio_socket(
-    auth_user: AuthenticatedUser,
-    ws: WebSocket,
-    audio_stream: mpsc::Sender<(SpeechToText, oneshot::Sender::<SpeechToTextResponse>)>,
-    instruction_stream: broadcast::Sender<Instruction>
-) {
-    let (mut write, mut read) = ws.split();
-    let (text_tx, mut text_rx) = mpsc::channel(AUDIO_TIMING_BUFFER);
-    let (audio_tx, audio_rx) = mpsc::channel(AUDIO_TIMING_BUFFER);
-    create_audio_timing_task(auth_user, text_tx, audio_rx, audio_stream, instruction_stream);
-
-    let write_handler = spawn(async move {
-        while let Some(message) = text_rx.recv().await {
-            let serialized = serde_json::to_string(&message).unwrap();
-            write.send(Message::text(serialized)).await.ok();
-        }
-        tracing::warn!("Client write socket closed");
-    }).fuse();
-
-    let read_handler = spawn(async move {
-        let mut msg_counter = 0;
-        while let Some(message) = read.next().await {
-            if let Ok(message) = message {
-                let audio = AudioData {
-                    payload: message.as_bytes().to_vec(),
-                    count: msg_counter
-                };
-                audio_tx.send(audio).await.ok();
-                msg_counter += 1;
-            } else {
-                break;
-            }
-        }
-        tracing::warn!("Client read socket closed");
-    }).fuse();
-
-    pin_mut!(write_handler, read_handler);
-
-    // If either task exits we want to clean up.
-    futures::select!(
-        _ = write_handler => {},
-        _ = read_handler => {},
-    );
 }
 
 #[derive(Clone, Debug)]
@@ -288,25 +231,4 @@ impl VoiceResponseCollection {
             sender.send(voice_response).ok();
         }
     }
-
-}
-
-pub fn routes(
-    idp: Option<Arc<IdentityProvider>>, session: MemoryStore, router: &mut Router
-) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
-    let speech_text_tx: mpsc::Sender<(SpeechToText, oneshot::Sender<SpeechToTextResponse>)> =
-        router.get_address().expect("Could not get SpeechToText channel").clone();
-    let instruction_tx: broadcast::Sender<Instruction> = router.announce();
-
-    let audio_ws = warp::path("audio")
-        .and(authenticate(idp, session.clone()))
-        .and(warp::ws())
-        .map(move |auth: AuthenticatedUser, session: SessionWithStore<MemoryStore>, ws: warp::ws::Ws| {
-            let speech_text_tx = speech_text_tx.clone();
-            let instruction_tx = instruction_tx.clone();
-            (ws.on_upgrade(move |socket| proxy_audio_socket(auth, socket, speech_text_tx, instruction_tx)), session)
-        })
-        .untuple_one()
-        .and_then(store_auth_cookie);
-    return audio_ws;
 }
