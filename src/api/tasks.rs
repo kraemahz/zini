@@ -70,7 +70,7 @@ async fn title_from_description(
 {
     let (request_tx, request_rx) = mpsc::channel(1);
     let (response_tx, mut response_rx) = mpsc::unbounded_channel();
-    let request = PromptTx::new_stream(description.to_string());
+    let request = PromptTx::title_from_desc(description.to_string());
     if prompt_request_tx.send((request.stream_id, request_rx, response_tx)).await.is_err() {
         return None;
     }

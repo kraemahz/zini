@@ -6,6 +6,7 @@ use futures::Future;
 use http::Uri;
 use prism_client::{AsyncClient, Wavelet};
 use rand::{distributions::Alphanumeric, Rng};
+use serde::Serialize;
 use subseq_util::router::Router;
 use subseq_util::tables::{DbPool, UserTable};
 use tokio::spawn;
@@ -123,6 +124,12 @@ pub fn create_users_from_events(mut user_created_rx: broadcast::Receiver<UserCre
     });
 }
 
+#[derive(Serialize)]
+struct PromptTxWrapper {
+    prompt_tx: PromptTx,
+    beam: String
+}
+
 struct WaveletHandler {
     job_result_tx: broadcast::Sender<JobResult>,
     job_created_tx: broadcast::Sender<Job>,
@@ -232,7 +239,7 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
     let user_created_tx: broadcast::Sender<UserCreated> = router.announce();
 
     // Prompts
-    let (prompt_request_tx, mut prompt_request_rx) = mpsc::channel::<PromptTx>(1024);
+    let (prompt_request_tx, mut prompt_request_rx) = mpsc::channel::<PromptTxWrapper>(1024);
     let mut new_prompt_rx: mpsc::Receiver<InitializePromptChannel> = router.create_channel();
 
     let prompt_requests = PromptResponseCollection::new();
@@ -296,9 +303,11 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
                     if let Some((stream_id, mut rx, tx)) = msg {
                         prompt_requests.insert(stream_id, tx);
                         let msg_tx = prompt_request_tx.clone();
+                        let prompt_response_beam = prompt_response_beam.clone();
                         spawn(async move {
                             while let Some(msg) = rx.recv().await {
-                                msg_tx.send(msg).await.ok();
+                                let wrapper = PromptTxWrapper{prompt_tx: msg, beam: prompt_response_beam.clone()};
+                                msg_tx.send(wrapper).await.ok();
                             }
                         });
                     }

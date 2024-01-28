@@ -25,6 +25,14 @@ pub struct PromptTx {
 }
 
 impl PromptTx {
+    pub fn title_from_desc(desc: String) -> Self {
+        let prompt_id = "tools_aNDkkK".to_string();
+        Self {
+            stream_id: Uuid::new_v4(),
+            payload: PromptTxPayload::Handshake{prompt_id, prompt_start: desc},
+        }
+    }
+
     pub fn new_stream(prompt_start: String) -> Self {
         let prompt_id = "tools_ZbTYeQ".to_string();
         Self {
@@ -104,28 +112,6 @@ pub enum PromptRxPayload {
     Tool(Tool),
     Stream{update: String, response_expected: bool},
     Close(PromptResponseType)
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PromptResponse {
-    pub request_id: Uuid,
-    pub response: Option<PromptResponseType>,
-    pub stream_id: Option<Uuid>,
-    pub error: Option<String>
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PromptStreamTx {
-    pub stream_id: Uuid,
-    pub content: String
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PromptStreamRx {
-    pub stream_id: Uuid,
-    pub content: String,
-    pub continues: bool,
-    pub expects_response: bool,
 }
 
 pub type InitializePromptChannel = (Uuid,
