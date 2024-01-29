@@ -39,6 +39,7 @@ const JOB_CREATED_BEAM: &str = "urn:subseq.io:builds:k8s:job:created";
 
 // Task Broadcast
 const TASK_CREATED_BEAM: &str = "urn:subseq.io:tasks:task:created";
+const TASK_RUN_BEAM: &str = "urn:subseq.io:tasks:task:run";
 const TASK_UPDATED_BEAM: &str = "urn:subseq.io:tasks:task:updated";
 const TASK_ASSIGNEE_BEAM: &str = "urn:subseq.io:tasks:task:assignee:changed";
 const TASK_STATE_BEAM: &str = "urn:subseq.io:tasks:task:state:changed";

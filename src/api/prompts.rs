@@ -70,6 +70,7 @@ pub struct TaskSummary {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ToolResult {
+    RunTask(Uuid),
     CreateTask(TaskSummary),
     UpdateTask(TaskSummary),
     FetchTasks(Vec<TaskSummary>),
@@ -89,6 +90,7 @@ pub enum PromptTxPayload {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Tool {
+    RunTask{task_id: Uuid},
     CreateTask{title: String,
                description: String,
                tags: Vec<String>,
@@ -204,6 +206,10 @@ async fn run_tool(db_pool: Arc<DbPool>,
                   project_id: &mut Uuid,
                   tool: Tool) -> ToolResult {
     match tool {
+        Tool::RunTask{ task_id: _ } => {
+            // TODO: This currently doesn't have an API
+            ToolResult::RunTask(Uuid::new_v4())
+        }
         Tool::FetchTasks => {
             let payload = QueryPayload{
                 page: 0,
