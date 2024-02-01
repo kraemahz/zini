@@ -35,7 +35,7 @@ impl Project {
                   author: &User,
                   name: &str,
                   description: &str,
-                  flow: Option<&Flow>) -> QueryResult<Self> {
+                  flow: &Flow) -> QueryResult<Self> {
 
         let project = Self {
             id: Uuid::new_v4(),
@@ -44,10 +44,10 @@ impl Project {
             created: chrono::Utc::now().naive_utc(),
             description: description.to_owned(),
             n_tasks: 0,
-            default_flow_id: flow.map(|f| f.id).unwrap_or(Uuid::nil())
+            default_flow_id: flow.id
         };
 
-        if project.name.len() > 10 {
+        if project.name.len() > 64 {
             let kind = diesel::result::DatabaseErrorKind::CheckViolation;
             let msg = Box::new(ValidationErrorMessage{message: "Invalid project name".to_string(),
                                                       column: "name".to_string(),
@@ -60,10 +60,31 @@ impl Project {
             .execute(conn)?;
         Ok(project)
     }
+
+    pub fn set_active_project(&self, conn: &mut PgConnection, uid: Uuid) -> QueryResult<()> {
+        use crate::schema::active_projects::dsl::*;
+        let pid = self.id;
+
+        diesel::insert_into(active_projects)
+            .values(&ActiveProject {user_id: uid, project_id: pid})
+            .on_conflict(user_id)
+            .do_update()
+            .set(project_id.eq(pid))
+            .execute(conn)?;
+        Ok(())
+    }
 }
 
 crate::zini_table!(Project, crate::schema::projects::dsl::projects);
 
+#[derive(Queryable, Insertable, Clone, Debug, Serialize)]
+#[diesel(table_name = crate::schema::active_projects)]
+pub struct ActiveProject {
+    pub user_id: Uuid,
+    pub project_id: Uuid,
+}
+
+crate::zini_table!(ActiveProject, crate::schema::active_projects::dsl::active_projects);
 
 #[cfg(test)]
 mod test {
@@ -72,6 +93,7 @@ mod test {
     use subseq_util::tables::UserTable;
     use function_name::named;
     use crate::tables::test::MIGRATIONS;
+    use crate::tables::Flow;
 
     #[test]
     #[named]
@@ -81,11 +103,12 @@ mod test {
                                      Some(MIGRATIONS));
         let mut conn = harness.conn(); 
         let user = User::create(&mut conn, Uuid::new_v4(), "test@example.com", None).expect("user");
+        let flow = Flow::default_flow(&mut conn).expect("default flow");
         let proj = Project::create(&mut conn,
                                    &user,
                                    "test_proj",
                                    "This is a test",
-                                   None).expect("proj");
+                                   &flow).expect("proj");
         let proj2 = Project::get(&mut conn, proj.id).expect("proj2");
         assert_eq!(proj, proj2);
         assert_eq!(proj.name, "TEST_PROJ"); // Forced uppercase

@@ -81,6 +81,12 @@ impl Flow {
         Some(task)
     }
 
+    pub fn default_flow<C>(conn: &mut C) -> Option<Self>
+        where C: Connection<Backend = Pg> + LoadConnection
+    {
+        Self::list(conn, 0, 1).into_iter().next()
+    }
+
     pub fn list<C>(conn: &mut C,
                    page: u32,
                    page_size: u32) -> Vec<Self> 

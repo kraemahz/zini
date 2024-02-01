@@ -52,7 +52,7 @@ impl Serialize for FrontEndMessage {
                 let mut state = serializer.serialize_struct("FrontEndMessage", 3)?;
                 state.serialize_field("channel", "INSTRUCT-MESSAGE")?;
                 state.serialize_field("role", &completion.role)?;
-                state.serialize_field("text", &completion.text)?;
+                state.serialize_field("content", &completion.content)?;
                 state
             }
         };
@@ -127,6 +127,7 @@ async fn client_websocket(
                     };
                     match decoded {
                         WebSocketMessage::Instruct(msg) => {
+                        tracing::info!("Instruct: {}", text);
                             if instruct_in_tx.send(msg).await.is_err() {
                                 break;
                             }

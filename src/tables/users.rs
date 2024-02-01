@@ -4,11 +4,23 @@ use chrono::NaiveDateTime;
 use uuid::Uuid;
 
 use subseq_util::tables::{UserTable, ValidationErrorMessage};
+use super::projects::{ActiveProject, Project};
 
 subseq_util::create_user_base!();
 crate::zini_table!(UserMetadata, crate::schema::auth::metadata::dsl::metadata);
 crate::zini_table!(UserPortraits, crate::schema::auth::portraits::dsl::portraits);
 crate::zini_table!(UserIdAccount, crate::schema::auth::user_id_accounts::dsl::user_id_accounts);
+
+impl User {
+    pub fn get_active_project(&self, conn: &mut PgConnection) -> Option<Project> {
+        let active_project = ActiveProject::get(conn, self.id);
+        if let Some(active_project) = active_project {
+            Project::get(conn, active_project.project_id)
+        } else {
+            None
+        }
+    }
+}
 
 #[cfg(test)]
 mod test {

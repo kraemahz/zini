@@ -36,15 +36,15 @@ pub async fn create_project_handler(payload: ProjectPayload,
     };
     let flow = match default_flow {
         Some(flow_id) => Flow::get(&mut conn, flow_id),
-        None => None
-    };
+        None => Flow::default_flow(&mut conn)
+    }.ok_or_else(|| warp::reject::custom(DatabaseError{}))?;
 
     let project = match Project::create(
             &mut conn,
             &user,
             &name.to_ascii_uppercase(),
             &description.unwrap_or_else(String::new),
-            flow.as_ref()) {
+            &flow) {
         Ok(project) => project,
         Err(_) => return Err(warp::reject::custom(ConflictError{})),
     };
@@ -69,7 +69,7 @@ pub async fn list_projects_handler(page_number: u32,
 }
 
 
-pub async fn get_project_handler(project_id: String,
+pub async fn get_project_handler(project_id: Uuid,
                                  _auth: AuthenticatedUser,
                                  session: SessionWithStore<MemoryStore>,
                                  db_pool: Arc<DbPool>) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
@@ -77,18 +77,51 @@ pub async fn get_project_handler(project_id: String,
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
     };
-    let project_id = match Uuid::parse_str(&project_id) {
-        Ok(project_id) => project_id,
-        Err(_) => {
-            return Err(warp::reject::custom(ParseError{}));
-        }
-    };
     let project = match Project::get(&mut conn, project_id) {
         Some(project) => project,
         None => {
             return Err(warp::reject::custom(NotFoundError{}));
         }
     };
+
+    Ok((warp::reply::json(&project), session))
+}
+
+#[derive(Deserialize)]
+pub struct ProjectSetter {
+    project_id: Uuid,
+}
+
+pub async fn set_active_project_handler(payload: ProjectSetter,
+                                        auth: AuthenticatedUser,
+                                        session: SessionWithStore<MemoryStore>,
+                                        db_pool: Arc<DbPool>) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
+    let mut conn = match db_pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Err(warp::reject::custom(DatabaseError{})),
+    };
+    let ProjectSetter{project_id} = payload;
+    let project = match Project::get(&mut conn, project_id) {
+        Some(project) => project,
+        None => {
+            return Err(warp::reject::custom(NotFoundError{}));
+        }
+    };
+    project.set_active_project(&mut conn, auth.id())
+        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+    Ok((warp::reply::json(&project), session))
+}
+
+pub async fn get_active_project_handler(auth: AuthenticatedUser,
+                                        session: SessionWithStore<MemoryStore>,
+                                        db_pool: Arc<DbPool>) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
+    let mut conn = match db_pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Err(warp::reject::custom(DatabaseError{})),
+    };
+    let user = User::get(&mut conn, auth.id())
+        .ok_or_else(|| warp::reject::custom(NotFoundError{}))?;
+    let project = user.get_active_project(&mut conn);
 
     Ok((warp::reply::json(&project), session))
 }
@@ -117,6 +150,23 @@ pub fn routes(idp: Option<Arc<IdentityProvider>>,
         .untuple_one()
         .and_then(store_auth_cookie);
 
+    let set_active_project = warp::path("active")
+        .and(warp::body::json())
+        .and(warp::put())
+        .and(authenticate(idp.clone(), session.clone()))
+        .and(with_db(pool.clone()))
+        .and_then(set_active_project_handler)
+        .untuple_one()
+        .and_then(store_auth_cookie);
+
+    let get_active_project = warp::path("active")
+        .and(warp::get())
+        .and(authenticate(idp.clone(), session.clone()))
+        .and(with_db(pool.clone()))
+        .and_then(get_active_project_handler)
+        .untuple_one()
+        .and_then(store_auth_cookie);
+
     let get_project = warp::get()
         .and(warp::path::param())
         .and(authenticate(idp.clone(), session.clone()))
@@ -128,5 +178,7 @@ pub fn routes(idp: Option<Arc<IdentityProvider>>,
     warp::path("project")
         .and(create_project
              .or(list_projects)
+             .or(set_active_project)
+             .or(get_active_project)
              .or(get_project))
 }

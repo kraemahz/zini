@@ -315,12 +315,12 @@ pub struct QueryReply {
 
 pub type QueryChannel = (QueryPayload, oneshot::Sender<Result<QueryReply, Rejection>>);
 
-pub async fn filter_tasks(db_pool: Arc<DbPool>, payload: QueryPayload) -> Result<QueryReply, Rejection> {
+pub async fn filter_tasks(auth: AuthenticatedUser, db_pool: Arc<DbPool>, payload: QueryPayload) -> Result<QueryReply, Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
     };
-    let tasks = Task::query(&mut conn, &payload.query, payload.page, payload.page_size);
+    let tasks = Task::query(&mut conn, auth.id(), &payload.query, payload.page, payload.page_size);
     let mut denorm_tasks = vec![];
     for task in tasks {
         let denorm_task = DenormalizedTask::denormalize(&mut conn, task)
@@ -333,11 +333,11 @@ pub async fn filter_tasks(db_pool: Arc<DbPool>, payload: QueryPayload) -> Result
 
 async fn filter_tasks_handler(
     payload: QueryPayload,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
     session: SessionWithStore<MemoryStore>,
     db_pool: Arc<DbPool>
 ) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
-    Ok((warp::reply::json(&filter_tasks(db_pool.clone(), payload).await?), session))
+    Ok((warp::reply::json(&filter_tasks(auth, db_pool.clone(), payload).await?), session))
 }
 
 pub fn routes(idp: Option<Arc<IdentityProvider>>,

@@ -152,8 +152,8 @@ impl Future for WaveletHandler {
                 for photon in photons {
                     let result: JobResult = match serde_json::from_slice(&photon.payload) {
                         Ok(ok) => ok,
-                        Err(_) => {
-                            tracing::error!("Received invalid Photon on {}", JOB_RESULT_BEAM);
+                        Err(err) => {
+                            tracing::error!("Received invalid Photon on {}: {:?}", JOB_RESULT_BEAM, err);
                             continue;
                         }
                     };
@@ -164,8 +164,8 @@ impl Future for WaveletHandler {
                 for photon in photons {
                     let result: Job = match serde_json::from_slice(&photon.payload) {
                         Ok(ok) => ok,
-                        Err(_) => {
-                            tracing::error!("Received invalid Photon on {}", JOB_RESULT_BEAM);
+                        Err(err) => {
+                            tracing::error!("Received invalid Photon on {}: {:?}", JOB_RESULT_BEAM, err);
                             continue;
                         }
                     };
@@ -189,8 +189,8 @@ impl Future for WaveletHandler {
                     for photon in photons {
                         let result: SpeechToTextResponse = match serde_cbor::from_slice(&photon.payload) {
                             Ok(ok) => ok,
-                            Err(_) => {
-                                tracing::error!("Received invalid Photon on {}", JOB_RESULT_BEAM);
+                            Err(err) => {
+                                tracing::error!("Received invalid Photon on {}: {:?}", JOB_RESULT_BEAM, err);
                                 continue;
                             }
                         };
@@ -200,8 +200,8 @@ impl Future for WaveletHandler {
                     for photon in photons {
                         let result: PromptRx = match serde_json::from_slice(&photon.payload) {
                             Ok(ok) => ok,
-                            Err(_) => {
-                                tracing::error!("Received invalid Photon on {}", this.prompt_beam);
+                            Err(err) => {
+                                tracing::error!("Received invalid Photon on {}: {:?}", this.prompt_beam, err);
                                 continue;
                             }
                         };

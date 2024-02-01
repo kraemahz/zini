@@ -64,6 +64,13 @@ diesel::table! {
 }
 
 diesel::table! {
+    active_projects (user_id) {
+        user_id -> Uuid,
+        project_id -> Uuid,
+    }
+}
+
+diesel::table! {
     tags (name) {
         name -> Varchar,
     }
@@ -155,7 +162,8 @@ pub mod auth {
 
 pub use auth::{users, user_id_accounts, portraits, metadata};
 
-
+diesel::joinable!(active_projects -> users (user_id));
+diesel::joinable!(active_projects -> projects (project_id));
 diesel::joinable!(metadata -> users (user_id));
 diesel::joinable!(portraits -> users (user_id));
 diesel::joinable!(default_project_tags -> projects (project_id));
@@ -180,6 +188,7 @@ diesel::joinable!(task_watchers -> users (watcher_id));
 diesel::joinable!(user_id_accounts -> users (user_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
+    active_projects,
     default_project_tags,
     flow_assignments,
     flow_exits,

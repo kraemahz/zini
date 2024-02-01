@@ -9,13 +9,28 @@ use subseq_util::tables::{DbPool, UserTable};
 use tokio::{sync::mpsc, task::spawn};
 use uuid::Uuid;
 
-use crate::tables::{TaskUpdate, Project, User};
+use crate::tables::{ActiveProject, TaskUpdate, Project, User, Flow};
 use super::tasks::{filter_tasks, create_task, QueryPayload, update_task};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatRole {
+    User,
+    Assistant,
+    System
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Content {
+    Text(String),
+    Object(Value)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletion {
-    pub role: String,
-    pub text: String
+    pub role: ChatRole,
+    pub content: Content
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -154,14 +169,32 @@ impl PromptResponseCollection {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum AuthRequestPayload {
+    Task {
+        title: String,
+        description: String,
+        tags: Vec<String>,
+        components: Vec<String>
+    },
+    TaskUpdate {
+        task_id: Uuid,
+        update: TaskUpdate
+    },
+    Project {
+        title: String,
+        description: String,
+    }
+}
+
 async fn auth_request(string_rx: &mut mpsc::Receiver<String>,
                       chat_tx: &mpsc::Sender<ChatCompletion>,
-                      entity: Value) -> bool 
+                      auth_request: AuthRequestPayload) -> bool 
 {
-    let auth_request = SystemAuthRequest{payload: entity};
     let chat = ChatCompletion {
-        role: "system".to_string(),
-        text: serde_json::to_string(&auth_request).expect("Request")
+        role: ChatRole::System,
+        content: Content::Object(serde_json::to_value(&auth_request).expect("Request"))
     };
     if chat_tx.send(chat).await.is_err() {
         return false;
@@ -179,31 +212,11 @@ async fn auth_request(string_rx: &mut mpsc::Receiver<String>,
     false
 }
 
-#[derive(Serialize)]
-struct AuthedTask {
-    title: String,
-    description: String,
-    tags: Vec<String>,
-    components: Vec<String>
-}
-
-#[derive(Serialize)]
-struct AuthedUpdate {
-    task_id: Uuid,
-    update: TaskUpdate
-}
-
-#[derive(Serialize)]
-struct AuthedProject {
-    title: String,
-    description: String,
-}
-
 async fn run_tool(db_pool: Arc<DbPool>,
                   string_rx: &mut mpsc::Receiver<String>,
                   chat_tx: &mpsc::Sender<ChatCompletion>,
                   auth_user: AuthenticatedUser,
-                  project_id: &mut Uuid,
+                  project_id: Uuid,
                   tool: Tool) -> ToolResult {
     match tool {
         Tool::RunTask{ task_id: _ } => {
@@ -211,12 +224,14 @@ async fn run_tool(db_pool: Arc<DbPool>,
             ToolResult::RunTask(Uuid::new_v4())
         }
         Tool::FetchTasks => {
+            let mut query = HashMap::new();
+            query.insert(String::from("project"), String::from("active"));
             let payload = QueryPayload{
                 page: 0,
                 page_size: 50,
-                query: HashMap::new()
+                query
             };
-            let result = filter_tasks(db_pool, payload).await;
+            let result = filter_tasks(auth_user, db_pool, payload).await;
             match result {
                 Ok(reply) => {
                     let summary_vec: Vec<_> = reply.tasks.into_iter()
@@ -234,25 +249,20 @@ async fn run_tool(db_pool: Arc<DbPool>,
             }
         }
         Tool::CreateTask { title, description, tags, components } => {
-            let authed_task = AuthedTask {
+            let authed_task = AuthRequestPayload::Task{
                 title: title.clone(),
                 description: description.clone(),
                 tags: tags.clone(),
                 components: components.clone()
             };
-            let entity = match serde_json::to_value(&authed_task) {
-                Ok(entity) => entity,
-                Err(err) => return ToolResult::Error(format!("Serialization error: {:?}", err))
-            };
-
-            if !auth_request(string_rx, chat_tx, entity).await {
+            if !auth_request(string_rx, chat_tx, authed_task).await {
                 return ToolResult::Error("Change was rejected by the user".to_string());
             }
 
             let task = match create_task(
                 db_pool.clone(),
                 auth_user.id(),
-                *project_id,
+                project_id,
                 title,
                 description
             ).await {
@@ -279,14 +289,10 @@ async fn run_tool(db_pool: Arc<DbPool>,
             })
         }
         Tool::UpdateTask { task_id, update } => {
-            let authed_task = AuthedUpdate {
+            let authed_task = AuthRequestPayload::TaskUpdate{
                 task_id, update: update.clone()
             };
-            let entity = match serde_json::to_value(&authed_task) {
-                Ok(entity) => entity,
-                Err(err) => return ToolResult::Error(format!("Serialization error: {:?}", err))
-            };
-            if !auth_request(string_rx, chat_tx, entity).await {
+            if !auth_request(string_rx, chat_tx, authed_task).await {
                 return ToolResult::Error("Change was rejected by the user".to_string());
             }
             let task = match update_task(db_pool, auth_user.id(), task_id, update).await {
@@ -300,15 +306,11 @@ async fn run_tool(db_pool: Arc<DbPool>,
             })
         }
         Tool::BeginProject { title, description } => {
-            let authed_project = AuthedProject {
+            let authed_project = AuthRequestPayload::Project{
                 title: title.clone(),
                 description: description.clone()
             };
-            let entity = match serde_json::to_value(&authed_project) {
-                Ok(entity) => entity,
-                Err(err) => return ToolResult::Error(format!("Serialization error: {:?}", err))
-            };
-            if !auth_request(string_rx, chat_tx, entity).await {
+            if !auth_request(string_rx, chat_tx, authed_project).await {
                 return ToolResult::Error("Change was rejected by the user".to_string());
             }
 
@@ -322,25 +324,26 @@ async fn run_tool(db_pool: Arc<DbPool>,
                 None => return ToolResult::Error("Database error: missing user".to_string())
             };
 
+            let flow = match Flow::list(&mut conn, 0, 1).into_iter().next() {
+                Some(flow) => flow,
+                None => return ToolResult::Error("No flows defined in database".to_string())
+            };
+
             let project = match Project::create(
                     &mut conn,
                     &user,
                     &title.to_ascii_uppercase(),
                     &description,
-                    None) {
+                    &flow) {
                 Ok(project) => project,
                 Err(err) => return ToolResult::Error(format!("Database error: {:?}", err))
             };
-            *project_id = project.id;
+            if project.set_active_project(&mut conn, user.id).is_err() {
+                return ToolResult::Error("Could not set the active project".to_string());
+            }
             ToolResult::BeginProject { project_id: project.id }
         }
     }
-}
-
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SystemAuthRequest {
-    payload: Value
 }
 
 
@@ -351,71 +354,82 @@ async fn new_instruction_channel(
     chat_tx: mpsc::Sender<ChatCompletion>,
     initialize_prompt_tx: mpsc::Sender<InitializePromptChannel>,
 ) -> Option<()> {
-
-    let (prompt_tx, prompt_request_rx) = mpsc::channel(64);
-    let (prompt_response_tx, mut prompt_rx) = mpsc::unbounded_channel();
-
-    // The inital ask from the instruct stream
-    let initial_request = string_rx.recv().await?;
-    let handshake = PromptTx::new_stream(initial_request);
-    let stream_id = handshake.stream_id;
-    initialize_prompt_tx.send((stream_id, prompt_request_rx, prompt_response_tx)).await.ok()?;
-    prompt_tx.send(handshake).await.ok()?;
-
-    let mut conn = db_pool.get().ok()?;
-    let mut project_id = Project::list(&mut conn, 0, 1).iter().map(|p| p.id).next()?;
+    tracing::info!("New instruction channel");
 
     loop {
-        let response = prompt_rx.recv().await?;
-        match response {
-            PromptRxPayload::Tool(tool) => {
-                let tool_response = run_tool(
-                    db_pool.clone(),
-                    &mut string_rx,
-                    &chat_tx,
-                    auth_user,
-                    &mut project_id,
-                    tool).await;
-                let response = PromptTx::tool_result(stream_id, tool_response);
-                prompt_tx.send(response).await.ok()?;
-            }
-            PromptRxPayload::Stream{update, response_expected} => {
-                let chat = ChatCompletion {
-                    role: "assistant".to_string(),
-                    text: update,
-                };
-                chat_tx.send(chat).await.ok()?;
+        // The inital ask from the instruct stream
+        let initial_request = string_rx.recv().await?;
 
-                if response_expected {
-                    let text = string_rx.recv().await?;
-                    let response = PromptTx::stream_update(stream_id, text);
+        let (prompt_tx, prompt_request_rx) = mpsc::channel(64);
+        let (prompt_response_tx, mut prompt_rx) = mpsc::unbounded_channel();
+
+        chat_tx.send(ChatCompletion {
+            role: ChatRole::User,
+            content: Content::Text(initial_request.clone())
+        }).await.ok();
+        tracing::info!("Initial request {}", initial_request);
+
+        let handshake = PromptTx::new_stream(initial_request);
+        let stream_id = handshake.stream_id;
+        initialize_prompt_tx.send((stream_id, prompt_request_rx, prompt_response_tx)).await.ok()?;
+        prompt_tx.send(handshake).await.ok()?;
+
+        let mut conn = db_pool.get().ok()?;
+        loop {
+            let response = prompt_rx.recv().await?;
+            let project_id = ActiveProject::get(&mut conn, auth_user.id())?.project_id;
+            tracing::info!("Prompt rx {:?}", response);
+            match response {
+                PromptRxPayload::Tool(tool) => {
+                    let tool_response = run_tool(
+                        db_pool.clone(),
+                        &mut string_rx,
+                        &chat_tx,
+                        auth_user,
+                        project_id,
+                        tool).await;
+                    let response = PromptTx::tool_result(stream_id, tool_response);
                     prompt_tx.send(response).await.ok()?;
                 }
-            }
-            PromptRxPayload::Close(last_update) => {
-                let chat = match last_update {
-                    PromptResponseType::Json(json) => {
-                        ChatCompletion { 
-                            role: "system".to_string(),
-                            text: serde_json::to_string(&json).ok()?
-                        }
-                    }
-                    PromptResponseType::Text(text) => {
-                        ChatCompletion { role: "assistant".to_string(), text }
-                    }
-                };
-                chat_tx.send(chat).await.ok()?;
+                PromptRxPayload::Stream{update, response_expected} => {
+                    let chat = ChatCompletion {
+                        role: ChatRole::Assistant,
+                        content: Content::Text(update),
+                    };
+                    chat_tx.send(chat).await.ok()?;
 
-                let chat = ChatCompletion {
-                    role: "system".to_string(),
-                    text: "{\"state\": \"closed\"}".to_string()
-                };
-                chat_tx.send(chat).await.ok()?;
-                break;
+                    if response_expected {
+                        let text = string_rx.recv().await?;
+                        chat_tx.send(ChatCompletion { role: ChatRole::User,
+                                                      content: Content::Text(text.clone()) }).await.ok();
+                        let response = PromptTx::stream_update(stream_id, text);
+                        prompt_tx.send(response).await.ok()?;
+                    }
+                }
+                PromptRxPayload::Close(last_update) => {
+                    let chat = match last_update {
+                        PromptResponseType::Json(json) => {
+                            ChatCompletion { 
+                                role: ChatRole::System,
+                                content: Content::Object(serde_json::to_value(&json).ok()?)
+                            }
+                        }
+                        PromptResponseType::Text(text) => {
+                            ChatCompletion { role: ChatRole::Assistant, content: Content::Text(text) }
+                        }
+                    };
+                    chat_tx.send(chat).await.ok()?;
+
+                    let chat = ChatCompletion {
+                        role: ChatRole::System,
+                        content: Content::Object(serde_json::json!({"state": "closed"})),
+                    };
+                    chat_tx.send(chat).await.ok()?;
+                    break;
+                }
             }
         }
     }
-    Some(())
 }
 
 pub type InstructChannel = (AuthenticatedUser, mpsc::Receiver<String>, mpsc::Sender<ChatCompletion>);

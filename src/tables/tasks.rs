@@ -5,6 +5,7 @@ use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use subseq_util::tables::UserTable;
 use super::{Flow, FlowNode, ValidationErrorMessage, Project, User, FlowConnection};
 
 
@@ -193,30 +194,53 @@ impl Task {
     }
 
     pub fn query(conn: &mut PgConnection,
+                 user_id: Uuid,
                  query_dict: &HashMap<String, String>,
                  page: u32,
                  page_size: u32) -> Vec<Self> {
         use crate::schema::tasks::dsl::*;
+        use crate::schema::task_projects;
 
-        let mut query = tasks.into_boxed();
+
+        let mut query = tasks.into_boxed()
+            .inner_join(task_projects::dsl::task_projects.on(task_projects::dsl::task_id.eq(id)));
+
         for (key, value) in query_dict {
             match key.as_str() {
-                "slug" => query = query.filter(slug.ilike(format!("%{}%", value))),
+                "slug" => query = query.filter(slug.like(format!("%{}%", value))),
+                "project" => {
+                    if let Ok(value) = Uuid::try_parse(value) {
+                        query = query.filter(task_projects::dsl::project_id.eq(value));
+                    } else if value == "active" {
+                        if let Some(user) = User::get(conn, user_id) {
+                            if let Some(project) = user.get_active_project(conn) {
+                                query = query.filter(task_projects::dsl::project_id.eq(project.id));
+                            }
+                        }
+                    } else {
+                        tracing::warn!("Invalid uuid project_id");
+                        continue;
+                    }
+                }
                 "title" => query = query.filter(title.ilike(format!("%{}%", value))),
                 "description" => query = query.filter(description.ilike(format!("%{}%", value))),
                 "author" => {
                     if let Ok(value) = Uuid::try_parse(value) {
                         query = query.filter(author_id.eq(value))
+                    } else if value == "self" {
+                        query = query.filter(author_id.eq(user_id))
                     } else {
-                        tracing::debug!("Invalid uuid");
+                        tracing::warn!("Invalid uuid author");
                         continue;
                     }
                 }
                 "assignee" => {
                     if let Ok(value) = Uuid::try_parse(value) {
                         query = query.filter(assignee_id.eq(value))
+                    } else if value == "self" {
+                        query = query.filter(assignee_id.eq(user_id))
                     } else {
-                        tracing::debug!("Invalid uuid");
+                        tracing::warn!("Invalid uuid assignee");
                         continue;
                     }
                 }
