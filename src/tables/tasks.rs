@@ -370,7 +370,7 @@ impl Task {
         Ok(())
     }
 }
-crate::zini_table!(Task, crate::schema::tasks::dsl::tasks);
+subseq_util::setup_table_crud!(Task, crate::schema::tasks::dsl::tasks);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum TaskUpdate {

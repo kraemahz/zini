@@ -7,9 +7,9 @@ use subseq_util::tables::{UserTable, ValidationErrorMessage};
 use super::projects::{ActiveProject, Project};
 
 subseq_util::create_user_base!();
-crate::zini_table!(UserMetadata, crate::schema::auth::metadata::dsl::metadata);
-crate::zini_table!(UserPortraits, crate::schema::auth::portraits::dsl::portraits);
-crate::zini_table!(UserIdAccount, crate::schema::auth::user_id_accounts::dsl::user_id_accounts);
+subseq_util::setup_table_crud!(UserMetadata, crate::schema::auth::metadata::dsl::metadata);
+subseq_util::setup_table_crud!(UserPortraits, crate::schema::auth::portraits::dsl::portraits);
+subseq_util::setup_table_crud!(UserIdAccount, crate::schema::auth::user_id_accounts::dsl::user_id_accounts);
 
 impl User {
     pub fn get_active_project(&self, conn: &mut PgConnection) -> Option<Project> {

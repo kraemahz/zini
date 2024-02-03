@@ -75,7 +75,7 @@ impl Project {
     }
 }
 
-crate::zini_table!(Project, crate::schema::projects::dsl::projects);
+subseq_util::setup_table_crud!(Project, crate::schema::projects::dsl::projects);
 
 #[derive(Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::active_projects)]
@@ -84,7 +84,7 @@ pub struct ActiveProject {
     pub project_id: Uuid,
 }
 
-crate::zini_table!(ActiveProject, crate::schema::active_projects::dsl::active_projects);
+subseq_util::setup_table_crud!(ActiveProject, crate::schema::active_projects::dsl::active_projects);
 
 #[cfg(test)]
 mod test {
