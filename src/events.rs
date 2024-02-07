@@ -13,6 +13,7 @@ use tokio::spawn;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::api::prompts::{InitializePromptChannel, PromptTx, PromptRx};
+use crate::api::tasks::TaskRun;
 use crate::api::voice::{
     SpeechToText,
     SpeechToTextResponse,
@@ -225,6 +226,7 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
     create_users_from_events(user_created_rx, db_pool);
     let mut task_rx: broadcast::Receiver<Task> = router.subscribe();
     let mut task_update_rx: broadcast::Receiver<TaskStatePayload> = router.subscribe();
+    let mut task_run_rx: broadcast::Receiver<TaskRun> = router.subscribe();
     let mut project_rx: broadcast::Receiver<Project> = router.subscribe();
     let mut flow_rx: broadcast::Receiver<Flow> = router.subscribe();
     let mut graph_rx: broadcast::Receiver<Graph> = router.subscribe();
@@ -341,6 +343,15 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
                     if let Ok(msg) = msg {
                         let vec = serde_json::to_vec(&msg).unwrap();
                         if client.emit(TASK_UPDATED_BEAM, vec).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                msg = task_run_rx.recv() => {
+                    if let Ok(msg) = msg {
+                        let msg = msg.state;
+                        let vec = serde_json::to_vec(&msg).unwrap();
+                        if client.emit(TASK_RUN_BEAM, vec).await.is_err() {
                             break;
                         }
                     }

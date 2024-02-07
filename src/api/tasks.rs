@@ -340,12 +340,46 @@ async fn filter_tasks_handler(
     Ok((warp::reply::json(&filter_tasks(auth, db_pool.clone(), payload).await?), session))
 }
 
+#[derive(Clone, Debug)]
+pub struct TaskRun {
+    pub state: TaskStatePayload
+}
+
+async fn run_task_handler(
+    task_id: Uuid,
+    _auth: AuthenticatedUser,
+    session: SessionWithStore<MemoryStore>,
+    db_pool: Arc<DbPool>,
+    task_run_tx: broadcast::Sender<TaskRun>
+) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
+    let mut conn = match db_pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Err(warp::reject::custom(DatabaseError{})),
+    };
+    let task = match Task::get(&mut conn, task_id) {
+        Some(task) => task,
+        None => {
+            return Err(warp::reject::custom(NotFoundError{}));
+        }
+    };
+    if task.assignee_id.is_none() {
+        return Err(warp::reject::custom(InvalidConfigurationError{}));
+    }
+    let run = TaskRun{state: TaskStatePayload::build(&mut conn, task)
+        .map_err(|_| warp::reject::custom(DatabaseError{}))?
+    };
+    task_run_tx.send(run).ok();
+
+    Ok((warp::reply::json(&serde_json::json!({"run": "started"})), session))
+}
+
 pub fn routes(idp: Option<Arc<IdentityProvider>>,
               session: MemoryStore,
               pool: Arc<DbPool>,
               router: &mut Router,) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
     let task_tx: broadcast::Sender<Task> = router.announce();
     let task_update_tx: broadcast::Sender<TaskStatePayload> = router.announce();
+    let task_run_tx: broadcast::Sender<TaskRun> = router.announce();
     let prompt_request_tx: mpsc::Sender<InitializePromptChannel> = router.get_address()
         .expect("No prompt request channel defined").clone();
 
@@ -386,9 +420,19 @@ pub fn routes(idp: Option<Arc<IdentityProvider>>,
         .untuple_one()
         .and_then(store_auth_cookie);
 
+    let run_task = warp::path("run")
+        .and(warp::path::param())
+        .and(authenticate(idp.clone(), session.clone()))
+        .and(with_db(pool.clone()))
+        .and(with_broadcast(task_run_tx))
+        .and_then(run_task_handler)
+        .untuple_one()
+        .and_then(store_auth_cookie);
+
     warp::path("task")
         .and(filter_tasks
              .or(create_task)
              .or(update_task)
+             .or(run_task)
              .or(get_task))
 }
