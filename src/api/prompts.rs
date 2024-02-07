@@ -9,7 +9,7 @@ use subseq_util::tables::{DbPool, UserTable};
 use tokio::{sync::mpsc, task::spawn};
 use uuid::Uuid;
 
-use crate::tables::{ActiveProject, TaskUpdate, Project, User, Flow};
+use crate::tables::{ActiveProject, TaskUpdate, Project, User, Flow, TaskLinkType};
 use super::tasks::{filter_tasks, create_task, QueryPayload, update_task};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,7 +108,9 @@ pub enum Tool {
     RunTask{task_id: Uuid},
     CreateTask{title: String,
                description: String,
-               tags: Vec<String>,
+               subtask_of: Option<String>,
+               blocked_by: Option<Vec<String>>,
+               tags: Option<Vec<String>>,
                components: Vec<String>},
     UpdateTask{task_id: Uuid, update: TaskUpdate},
     FetchTasks,
@@ -175,7 +177,6 @@ enum AuthRequestPayload {
     Task {
         title: String,
         description: String,
-        tags: Vec<String>,
         components: Vec<String>
     },
     TaskUpdate {
@@ -248,11 +249,10 @@ async fn run_tool(db_pool: Arc<DbPool>,
                 }
             }
         }
-        Tool::CreateTask { title, description, tags, components } => {
+        Tool::CreateTask { title, description, subtask_of, blocked_by, tags, components } => {
             let authed_task = AuthRequestPayload::Task{
                 title: title.clone(),
                 description: description.clone(),
-                tags: tags.clone(),
                 components: components.clone()
             };
             if !auth_request(string_rx, chat_tx, authed_task).await {
@@ -274,12 +274,29 @@ async fn run_tool(db_pool: Arc<DbPool>,
                 Ok(conn) => conn,
                 Err(err) => return ToolResult::Error(err.to_string())
             };
-            for tag in tags {
-                let label = format!("{{\"label\": \"{}\"}}", tag);
-                task.add_tag(&mut conn, &label).ok();
+
+            if let Some(subtask_of) = subtask_of {
+                if let Ok(uuid) = Uuid::parse_str(&subtask_of) {
+                    task.add_link(&mut conn, uuid, TaskLinkType::SubtaskOf).ok();
+                }
+            }
+
+            if let Some(blocked_by) = blocked_by {
+                for block_id in blocked_by {
+                    if let Ok(uuid) = Uuid::parse_str(&block_id) {
+                        task.add_link(&mut conn, uuid, TaskLinkType::DependsOn).ok();
+                    }
+                }
+            }
+
+            if let Some(tags) = tags {
+                for tag in tags {
+                    let label = serde_json::to_string(&serde_json::json!({"label": tag})).expect("is valid");
+                    task.add_tag(&mut conn, &label).ok();
+                }
             }
             for component in components {
-                let component = format!("{{\"component\": \"{}\"}}", component);
+                let component = serde_json::to_string(&serde_json::json!({"component": component})).expect("is valid");
                 task.add_tag(&mut conn, &component).ok();
             }
             ToolResult::CreateTask(TaskSummary {
