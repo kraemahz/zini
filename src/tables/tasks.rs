@@ -114,6 +114,11 @@ impl Task {
         Ok(())
     }
 
+    pub fn get_result(conn: &mut PgConnection, task_id: Uuid) -> QueryResult<Self> {
+        use crate::schema::tasks::table;
+        table.find(task_id).get_result::<Self>(conn)
+    }
+
     pub fn rm_project(&self, conn: &mut PgConnection, project_id: Uuid) -> QueryResult<()> {
         use crate::schema::task_projects;
        diesel::delete(task_projects::table)
@@ -200,7 +205,6 @@ impl Task {
                  page_size: u32) -> Vec<Self> {
         use crate::schema::tasks::dsl::*;
         use crate::schema::task_projects;
-
 
         let mut query = tasks.into_boxed()
             .inner_join(task_projects::dsl::task_projects.on(task_projects::dsl::task_id.eq(id)));
@@ -469,9 +473,9 @@ impl TaskFlow {
 /// Represents links between tasks for dependencies and subtask behavior
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct TaskLink {
-    task_from_id: Uuid,
-    task_to_id: Uuid,
-    link_type: TaskLinkType,
+    pub task_from_id: Uuid,
+    pub task_to_id: Uuid,
+    pub link_type: TaskLinkType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

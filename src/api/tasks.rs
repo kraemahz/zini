@@ -24,7 +24,7 @@ use crate::tables::{
     TaskFlow,
     TaskLink,
     TaskUpdate,
-    User,
+    User, TaskLinkType,
 };
 use super::with_channel;
 use super::prompts::{PromptTx, PromptRxPayload, PromptResponseType, InitializePromptChannel};
@@ -195,9 +195,9 @@ impl TaskStatePayload {
 }
 
 pub async fn update_task(db_pool: Arc<DbPool>,
-                     user_id: Uuid,
-                     task_id: Uuid,
-                     update: TaskUpdate) -> Result<TaskStatePayload, Rejection> {
+                         user_id: Uuid,
+                         task_id: Uuid,
+                         update: TaskUpdate) -> Result<TaskStatePayload, Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError{})),
@@ -235,8 +235,14 @@ async fn update_task_handler(
     Ok((warp::reply::json(&task_state), session))
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct GetTaskQuery {
+    denormalized: bool
+}
+
 async fn get_task_handler(
     task_id: String,
+    query: GetTaskQuery,
     _auth: AuthenticatedUser,
     session: SessionWithStore<MemoryStore>,
     db_pool: Arc<DbPool>
@@ -258,11 +264,17 @@ async fn get_task_handler(
         }
     };
 
-    let task_payload = match TaskStatePayload::build(&mut conn, task) {
-        Ok(state) => state,
-        Err(_) => return Err(warp::reject::custom(DatabaseError{}))
-    };
-    Ok((warp::reply::json(&task_payload), session))
+    if query.denormalized {
+        let task_details = DenormalizedTaskDetails::denormalize(&mut conn, &task)
+            .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+        Ok((warp::reply::json(&task_details), session))
+    } else {
+        let task_payload = match TaskStatePayload::build(&mut conn, task) {
+            Ok(state) => state,
+            Err(_) => return Err(warp::reject::custom(DatabaseError{}))
+        };
+        Ok((warp::reply::json(&task_payload), session))
+    }
 }
 
 #[derive(Deserialize)]
@@ -284,7 +296,7 @@ pub struct DenormalizedTask {
 }
 
 impl DenormalizedTask {
-    pub fn denormalize(conn: &mut PgConnection, task: Task) -> QueryResult<Self> {
+    pub fn denormalize(conn: &mut PgConnection, task: &Task) -> QueryResult<Self> {
         let author = User::get(conn, task.author_id).ok_or_else(
             || diesel::result::Error::NotFound)?;
         let author = DenormalizedUser::denormalize(conn, author)?;
@@ -298,12 +310,90 @@ impl DenormalizedTask {
 
         Ok(Self {
             id: task.id,
-            slug: task.slug,
+            slug: task.slug.clone(),
             created: task.created,
-            title: task.title,
-            description: task.description,
+            title: task.title.clone(),
+            description: task.description.clone(),
             author,
             assignee
+        })
+    }
+}
+
+#[derive(Serialize)]
+pub struct DenormalizedTaskLink {
+    pub from_link: DenormalizedTask,
+    pub to_link: DenormalizedTask,
+    pub link_type: TaskLinkType,
+}
+
+impl DenormalizedTaskLink {
+    fn denormalize(conn: &mut PgConnection, task_link: TaskLink) -> QueryResult<Self> {
+        let task_from = Task::get_result(conn, task_link.task_from_id)?;
+        let task_to = Task::get_result(conn, task_link.task_from_id)?;
+        let task_from_deno = DenormalizedTask::denormalize(conn, &task_from)?;
+        let task_to_deno = DenormalizedTask::denormalize(conn, &task_to)?;
+        Ok(Self {
+            from_link: task_from_deno,
+            to_link: task_to_deno,
+            link_type: task_link.link_type
+        })
+    }
+}
+
+#[derive(Serialize)]
+pub struct DenormalizedTaskDetails {
+    pub tags: Vec<String>,
+    pub watchers: Vec<DenormalizedUser>,
+    pub state: FlowNode,
+    pub links_out: Vec<DenormalizedTaskLink>,
+    pub links_in: Vec<DenormalizedTaskLink>,
+    pub valid_transitions: Vec<FlowNode>
+}
+
+impl DenormalizedTaskDetails {
+    pub fn denormalize(conn: &mut PgConnection, task: &Task) -> QueryResult<Self> {
+        let flows = task.flows(conn)?;
+        let tags = task.tags(conn).ok().unwrap_or_else(Vec::new);
+
+        let watchers: Vec<DenormalizedUser> = task.watchers(conn)?
+            .into_iter().filter_map(|user| {
+            DenormalizedUser::denormalize(conn, user).ok()
+        }).collect();
+        let state = TaskFlow::get_active_node(conn, &flows)?;
+        let valid_transitions = FlowConnection::edges(conn, state.id)?;
+
+        let links_out: Vec<DenormalizedTaskLink> = TaskLink::get_outgoing(conn, &task)?
+            .into_iter()
+            .filter_map(|task_link| DenormalizedTaskLink::denormalize(conn, task_link).ok())
+            .collect();
+        let links_in: Vec<DenormalizedTaskLink> = TaskLink::get_incoming(conn, &task)?
+            .into_iter()
+            .filter_map(|task_link| DenormalizedTaskLink::denormalize(conn, task_link).ok())
+            .collect();
+
+        Ok(Self {
+            tags,
+            watchers,
+            state,
+            links_out,
+            links_in,
+            valid_transitions
+        })
+    }
+}
+
+#[derive(Serialize)]
+pub struct DenormalizedTaskState {
+    pub task: DenormalizedTask,
+    pub details: DenormalizedTaskDetails,
+}
+
+impl DenormalizedTaskState {
+    pub fn denormalize(conn: &mut PgConnection, task: &Task) -> QueryResult<Self> {
+        Ok(Self {
+            task: DenormalizedTask::denormalize(conn, task)?,
+            details: DenormalizedTaskDetails::denormalize(conn, task)?
         })
     }
 }
@@ -323,7 +413,7 @@ pub async fn filter_tasks(auth: AuthenticatedUser, db_pool: Arc<DbPool>, payload
     let tasks = Task::query(&mut conn, auth.id(), &payload.query, payload.page, payload.page_size);
     let mut denorm_tasks = vec![];
     for task in tasks {
-        let denorm_task = DenormalizedTask::denormalize(&mut conn, task)
+        let denorm_task = DenormalizedTask::denormalize(&mut conn, &task)
             .map_err(|_| warp::reject::custom(DatabaseError{}))?;
         denorm_tasks.push(denorm_task);
     }
@@ -405,6 +495,7 @@ pub fn routes(idp: Option<Arc<IdentityProvider>>,
 
     let get_task = warp::get()
         .and(warp::path::param())
+        .and(warp::query::<GetTaskQuery>())
         .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and_then(get_task_handler)
