@@ -202,7 +202,9 @@ impl Future for WaveletHandler {
                         let result: PromptRx = match serde_json::from_slice(&photon.payload) {
                             Ok(ok) => ok,
                             Err(err) => {
-                                tracing::error!("Received invalid Photon on {}: {:?}", this.prompt_beam, err);
+                                let payload = String::from_utf8(photon.payload.clone()).unwrap_or_default();
+                                tracing::error!("Received invalid Photon on {}: {:?}\n{}",
+                                                this.prompt_beam, err, payload);
                                 continue;
                             }
                         };
