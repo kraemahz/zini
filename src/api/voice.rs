@@ -76,10 +76,14 @@ pub fn decode_webm_bytes_to_pcm(payload: Vec<u8>) -> Result<(u32, Vec<f32>), Sym
     let cursor = io::Cursor::new(payload);
     let media_stream = MediaSourceStream::new(Box::new(cursor), Default::default());
     let mut hint = Hint::new();
+    // The frontend is defined as audio/webm;codecs=pcm, but firefox ignores this
     hint.mime_type("audio/webm");
-    let probed = symphonia::default::get_probe()
+
+    // Find the actual format using the probe
+    let mut probed = symphonia::default::get_probe()
         .format(&hint, media_stream, &Default::default(), &Default::default())?;
     let mut format_reader = probed.format;
+
     let mut track = format_reader.default_track()
         .ok_or_else(|| SymError::Unsupported("No track"))?.clone();
     track.codec_params.max_frames_per_packet = Some(1024);
