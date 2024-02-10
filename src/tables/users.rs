@@ -8,7 +8,21 @@ use super::projects::{ActiveProject, Project};
 
 subseq_util::create_user_base!();
 subseq_util::setup_table_crud!(UserMetadata, crate::schema::auth::metadata::dsl::metadata);
-subseq_util::setup_table_crud!(UserPortraits, crate::schema::auth::portraits::dsl::portraits);
+subseq_util::setup_table_crud!(UserPortrait, crate::schema::auth::portraits::dsl::portraits);
+
+impl UserPortrait {
+    pub fn create(conn: &mut PgConnection, user_id: Uuid, portrait: Vec<u8>) -> QueryResult<Self> {
+        let portrait = UserPortrait {
+            user_id,
+            portrait
+        };
+        diesel::insert_into(crate::schema::auth::portraits::table)
+            .values(&portrait)
+            .execute(conn)?;
+        Ok(portrait)
+    }
+}
+
 subseq_util::setup_table_crud!(UserIdAccount, crate::schema::auth::user_id_accounts::dsl::user_id_accounts);
 
 impl User {

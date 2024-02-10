@@ -2695,7 +2695,7 @@ checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
 [[package]]
 name = "subseq_util"
 version = "0.1.2"
-source = "git+https://github.com/kraemahz/subseq_util.git?branch=main#1af2779ea69b87a37e0b35b9f0190668e1873733"
+source = "git+https://github.com/kraemahz/subseq_util.git?branch=main#88fbd6df5057e4d29cd906c8bef5f880247bbd6d"
 dependencies = [
  "anyhow",
  "anymap",
@@ -3738,6 +3738,7 @@ name = "zini"
 version = "0.1.0"
 dependencies = [
  "byteorder",
+ "bytes 1.5.0",
  "chrono",
  "clap",
  "diesel",
