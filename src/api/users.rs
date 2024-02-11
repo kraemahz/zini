@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use bytes::{BytesMut, BufMut};
+use bytes::Buf;
 use diesel::{PgConnection, QueryResult};
 use chrono::NaiveDateTime;
-use futures::TryStreamExt;
+use futures::{TryStreamExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use subseq_util::api::InvalidConfigurationError;
 use subseq_util::api::sessions::store_auth_cookie;
@@ -15,7 +15,7 @@ use subseq_util::{
 use uuid::Uuid;
 use warp::{Filter, http::Response, reply::Reply, reject::Rejection};
 use warp_sessions::{MemoryStore, SessionWithStore};
-use warp::multipart::{FormData, Part};
+use warp::multipart::FormData;
 use crate::tables::{UserIdAccount, User, UserMetadata, UserPortrait};
 
 #[derive(Deserialize, Serialize)]
@@ -105,38 +105,30 @@ pub async fn upload_portrait_handler(
     session: SessionWithStore<MemoryStore>,
     db_pool: Arc<DbPool>,
 ) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
-    let portrait_bytes = process_multipart(form_data).await
-        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
-    let mut conn = db_pool.get().map_err(|_| warp::reject::custom(DatabaseError{}))?;
-    let portrait = UserPortrait::create(&mut conn, user_id, portrait_bytes)
-        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
-    Ok((warp::reply::json(&portrait), session))
-}
 
-async fn process_multipart(form_data: FormData) -> Result<Vec<u8>, warp::Rejection> {
-    let parts: Vec<Part> = form_data.try_collect().await.map_err(|e| {
-        eprintln!("Error collecting form data: {}", e);
-        warp::reject::custom(InvalidConfigurationError{})
-    })?;
-    let mut file_bytes = BytesMut::new();
-    for part in parts {
-        // You can use part.name() to get the field name and handle different fields differently
-        // Here, we assume there's a file part without checking its name or filename.
-        // For a more robust implementation, check part.name() and part.filename() as needed.
-        if let Some(_filename) = part.filename() {
-            let value = part.stream().try_fold(BytesMut::new(), |mut acc, bytes| async move {
-                acc.put(bytes);
-                Ok(acc)
-            }).await.map_err(|e| {
-                eprintln!("Error processing file part: {}", e);
-                warp::reject::custom(InvalidConfigurationError{})
-            })?;
-            
-            file_bytes = value;
-        }
+    let mut parts = form_data.into_stream();
+    let mut file_data = vec![];
+
+    while let Some(Ok(part)) = parts.next().await
+    {
+        let data = part.stream().try_fold(Vec::new(), |mut acc, buf| async move {
+            acc.extend_from_slice(buf.chunk());
+            Ok(acc)
+        })
+        .await
+        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+        file_data.extend_from_slice(&data);
     }
 
-    Ok(file_bytes.to_vec())
+    if file_data.is_empty() {
+        return Err(warp::reject::custom(InvalidConfigurationError{}));
+    }
+    tracing::info!("Portrait with {} bytes", file_data.len());
+    let mut conn = db_pool.get().map_err(|_| warp::reject::custom(DatabaseError{}))?;
+
+    let portrait = UserPortrait::create(&mut conn, user_id, file_data)
+        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+    Ok((warp::reply::json(&portrait), session))
 }
 
 pub fn routes(
@@ -163,9 +155,8 @@ pub fn routes(
         .and_then(store_auth_cookie);
 
     let put_image = warp::path("portrait")
-        .and(warp::put())
         .and(warp::path::param())
-        .and(warp::multipart::form().max_length(1024 * 1024))
+        .and(warp::multipart::form().max_length(10 * 1024 * 1024))
         .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and_then(upload_portrait_handler)

@@ -218,6 +218,7 @@ async fn run_tool(db_pool: Arc<DbPool>,
                   chat_tx: &mpsc::Sender<ChatCompletion>,
                   auth_user: AuthenticatedUser,
                   project_id: Uuid,
+                  check_auth: &mut bool,
                   tool: Tool) -> ToolResult {
     match tool {
         Tool::RunTask{ task_id: _ } => {
@@ -255,7 +256,7 @@ async fn run_tool(db_pool: Arc<DbPool>,
                 description: description.clone(),
                 components: components.clone()
             };
-            if !auth_request(string_rx, chat_tx, authed_task).await {
+            if *check_auth && !auth_request(string_rx, chat_tx, authed_task).await {
                 return ToolResult::Error("Change was rejected by the user".to_string());
             }
 
@@ -309,17 +310,21 @@ async fn run_tool(db_pool: Arc<DbPool>,
             let authed_task = AuthRequestPayload::TaskUpdate{
                 task_id, update: update.clone()
             };
-            if !auth_request(string_rx, chat_tx, authed_task).await {
+            if *check_auth && !auth_request(string_rx, chat_tx, authed_task).await {
                 return ToolResult::Error("Change was rejected by the user".to_string());
             }
-            let task = match update_task(db_pool, auth_user.id(), task_id, update).await {
+            let mut conn = match db_pool.get() {
+                Ok(conn) => conn,
+                Err(_) => return ToolResult::Error(format!("Database access error"))
+            };
+            let task = match update_task(&mut conn, auth_user.id(), task_id, update).await {
                 Ok(task) => task,
                 Err(err) => return ToolResult::Error(format!("Database error: {:?}", err))
             };
             ToolResult::UpdateTask(TaskSummary { 
-                task_id: task.task.id,
-                title: task.task.title,
-                description: task.task.description
+                task_id: task.id,
+                title: task.title,
+                description: task.description
             })
         }
         Tool::BeginProject { title, description } => {
@@ -327,7 +332,7 @@ async fn run_tool(db_pool: Arc<DbPool>,
                 title: title.clone(),
                 description: description.clone()
             };
-            if !auth_request(string_rx, chat_tx, authed_project).await {
+            if *check_auth && !auth_request(string_rx, chat_tx, authed_project).await {
                 return ToolResult::Error("Change was rejected by the user".to_string());
             }
 
@@ -358,6 +363,8 @@ async fn run_tool(db_pool: Arc<DbPool>,
             if project.set_active_project(&mut conn, user.id).is_err() {
                 return ToolResult::Error("Could not set the active project".to_string());
             }
+            *check_auth = false;  // When the project is set to a new one we can ignore auth for
+                                  // the rest of the project.
             ToolResult::BeginProject { project_id: project.id }
         }
     }
@@ -376,6 +383,7 @@ async fn new_instruction_channel(
     loop {
         // The inital ask from the instruct stream
         let initial_request = string_rx.recv().await?;
+        let mut check_auth = true;
 
         let (prompt_tx, prompt_request_rx) = mpsc::channel(64);
         let (prompt_response_tx, mut prompt_rx) = mpsc::unbounded_channel();
@@ -404,6 +412,7 @@ async fn new_instruction_channel(
                         &chat_tx,
                         auth_user,
                         project_id,
+                        &mut check_auth,
                         tool).await;
                     let response = PromptTx::tool_result(stream_id, tool_response);
                     prompt_tx.send(response).await.ok()?;

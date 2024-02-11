@@ -194,32 +194,24 @@ impl TaskStatePayload {
     }
 }
 
-pub async fn update_task(db_pool: Arc<DbPool>,
+pub async fn update_task(conn: &mut PgConnection,
                          user_id: Uuid,
                          task_id: Uuid,
-                         update: TaskUpdate) -> Result<TaskStatePayload, Rejection> {
-    let mut conn = match db_pool.get() {
-        Ok(conn) => conn,
-        Err(_) => return Err(warp::reject::custom(DatabaseError{})),
-    };
-    let mut task = match Task::get(&mut conn, task_id) {
+                         update: TaskUpdate) -> Result<Task, Rejection> {
+    let mut task = match Task::get(conn, task_id) {
         Some(task) => task,
         None => {
             return Err(warp::reject::custom(NotFoundError{}));
         }
     };
-    match task.update(&mut conn, user_id, update) {
+    match task.update(conn, user_id, update) {
         Ok(state) => state,
         Err(err) => {
             tracing::warn!("Update error: {}", err);
             return Err(warp::reject::custom(DatabaseError{}));
         }
     };
-
-    TaskStatePayload::build(&mut conn, task).map_err(|err| {
-        tracing::warn!("Payload build error: {}", err);
-        warp::reject::custom(DatabaseError{})
-    })
+    Ok(task)
 }
 
 async fn update_task_handler(
@@ -230,9 +222,17 @@ async fn update_task_handler(
     db_pool: Arc<DbPool>,
     sender: broadcast::Sender<TaskStatePayload>
 ) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
-    let task_state = update_task(db_pool.clone(), auth.id(), task_id, payload).await?;
-    sender.send(task_state.clone()).ok();
-    Ok((warp::reply::json(&task_state), session))
+    let mut conn = match db_pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Err(warp::reject::custom(DatabaseError{})),
+    };
+    let task = update_task(&mut conn, auth.id(), task_id, payload).await?;
+    let task_denorm = DenormalizedTask::denormalize(&mut conn, &task)
+        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+    let task_state = TaskStatePayload::build(&mut conn, task)
+        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+    sender.send(task_state).ok();
+    Ok((warp::reply::json(&task_denorm), session))
 }
 
 #[derive(Serialize, Deserialize)]
