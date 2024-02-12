@@ -284,7 +284,7 @@ pub struct QueryPayload {
     pub query: HashMap<String, String>
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, Clone)]
 pub struct DenormalizedTask {
     pub id: Uuid,
     pub slug: String,
@@ -320,28 +320,35 @@ impl DenormalizedTask {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, Clone)]
 pub struct DenormalizedTaskLink {
-    pub from_link: DenormalizedTask,
-    pub to_link: DenormalizedTask,
+    pub link: DenormalizedTask,
     pub link_type: TaskLinkType,
 }
 
+#[derive(Serialize, Debug, Clone)]
+pub enum DirectionalLink {
+    From(TaskLink),
+    To(TaskLink)
+}
+
 impl DenormalizedTaskLink {
-    fn denormalize(conn: &mut PgConnection, task_link: TaskLink) -> QueryResult<Self> {
-        let task_from = Task::get_result(conn, task_link.task_from_id)?;
-        let task_to = Task::get_result(conn, task_link.task_from_id)?;
-        let task_from_deno = DenormalizedTask::denormalize(conn, &task_from)?;
-        let task_to_deno = DenormalizedTask::denormalize(conn, &task_to)?;
+    fn denormalize(conn: &mut PgConnection, link: DirectionalLink) -> QueryResult<Self> {
+        let (task_id, link_type) = match link {
+            DirectionalLink::From(task_link) => (task_link.task_from_id, task_link.link_type),
+            DirectionalLink::To(task_link) => (task_link.task_to_id, task_link.link_type)
+        };
+        let task = Task::get_result(conn, task_id)?;
+        let task_deno = DenormalizedTask::denormalize(conn, &task)?;
+
         Ok(Self {
-            from_link: task_from_deno,
-            to_link: task_to_deno,
-            link_type: task_link.link_type
+            link: task_deno,
+            link_type,
         })
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, Clone)]
 pub struct DenormalizedTaskDetails {
     pub tags: Vec<String>,
     pub watchers: Vec<DenormalizedUser>,
@@ -365,11 +372,20 @@ impl DenormalizedTaskDetails {
 
         let links_out: Vec<DenormalizedTaskLink> = TaskLink::get_outgoing(conn, &task)?
             .into_iter()
-            .filter_map(|task_link| DenormalizedTaskLink::denormalize(conn, task_link).ok())
+            .filter_map(|task_link|
+                DenormalizedTaskLink::denormalize(
+                    conn,
+                    DirectionalLink::To(task_link)).ok()
+            )
             .collect();
         let links_in: Vec<DenormalizedTaskLink> = TaskLink::get_incoming(conn, &task)?
             .into_iter()
-            .filter_map(|task_link| DenormalizedTaskLink::denormalize(conn, task_link).ok())
+            .filter_map(|task_link| {
+                DenormalizedTaskLink::denormalize(
+                    conn,
+                    DirectionalLink::From(task_link)
+                ).ok()
+            })
             .collect();
 
         Ok(Self {
@@ -383,7 +399,7 @@ impl DenormalizedTaskDetails {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, Clone)]
 pub struct DenormalizedTaskState {
     pub task: DenormalizedTask,
     pub details: DenormalizedTaskDetails,
@@ -432,7 +448,7 @@ async fn filter_tasks_handler(
 
 #[derive(Clone, Debug)]
 pub struct TaskRun {
-    pub state: TaskStatePayload
+    pub state: DenormalizedTaskState
 }
 
 async fn run_task_handler(
@@ -455,9 +471,10 @@ async fn run_task_handler(
     if task.assignee_id.is_none() {
         return Err(warp::reject::custom(InvalidConfigurationError{}));
     }
-    let run = TaskRun{state: TaskStatePayload::build(&mut conn, task)
-        .map_err(|_| warp::reject::custom(DatabaseError{}))?
-    };
+    let state = DenormalizedTaskState::denormalize(&mut conn, &task)
+        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+
+    let run = TaskRun{state};
     task_run_tx.send(run).ok();
 
     Ok((warp::reply::json(&serde_json::json!({"run": "started"})), session))

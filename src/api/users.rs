@@ -23,7 +23,7 @@ pub struct StoredUserMeta {
     job_title: String
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, Clone)]
 pub struct DenormalizedUser {
     pub id: Uuid,
     pub created: NaiveDateTime,
