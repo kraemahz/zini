@@ -5,9 +5,8 @@ use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::{Flow, FlowConnection, FlowNode, Project, User, ValidationErrorMessage};
 use subseq_util::tables::UserTable;
-use super::{Flow, FlowNode, ValidationErrorMessage, Project, User, FlowConnection};
-
 
 #[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::task_projects)]
@@ -15,7 +14,6 @@ pub struct TaskProject {
     pub task_id: Uuid,
     pub project_id: Uuid,
 }
-
 
 #[derive(Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::tasks)]
@@ -31,24 +29,25 @@ pub struct Task {
 
 impl PartialEq for Task {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id &&
-            self.slug == other.slug &&
-            self.created.timestamp_micros() == other.created.timestamp_micros() &&
-            self.title == other.title &&
-            self.description == other.description &&
-            self.author_id == other.author_id &&
-            self.assignee_id == other.assignee_id
+        self.id == other.id
+            && self.slug == other.slug
+            && self.created.timestamp_micros() == other.created.timestamp_micros()
+            && self.title == other.title
+            && self.description == other.description
+            && self.author_id == other.author_id
+            && self.assignee_id == other.assignee_id
     }
 }
 
 impl Task {
-    pub fn create(conn: &mut PgConnection,
-                  task_id: Uuid,
-                  project: &mut Project,
-                  title: &str,
-                  description: &str,
-                  author: &User) -> QueryResult<Self> {
-
+    pub fn create(
+        conn: &mut PgConnection,
+        task_id: Uuid,
+        project: &mut Project,
+        title: &str,
+        description: &str,
+        author: &User,
+    ) -> QueryResult<Self> {
         project.n_tasks += 1;
         let slug = format!("{}-{}", project.name, project.n_tasks);
 
@@ -74,7 +73,7 @@ impl Task {
                 task_id: task.id,
                 flow_id: default_flow_id,
                 current_node_id: flow.map(|f| f.entry_node_id),
-                order_added: 0
+                order_added: 0,
             };
             let watcher = TaskWatcher {
                 task_id: task.id,
@@ -121,7 +120,7 @@ impl Task {
 
     pub fn rm_project(&self, conn: &mut PgConnection, project_id: Uuid) -> QueryResult<()> {
         use crate::schema::task_projects;
-       diesel::delete(task_projects::table)
+        diesel::delete(task_projects::table)
             .filter(task_projects::dsl::task_id.eq(self.id))
             .filter(task_projects::dsl::project_id.eq(project_id))
             .execute(conn)?;
@@ -129,18 +128,21 @@ impl Task {
     }
 
     pub fn add_tag(&self, conn: &mut PgConnection, tag: &str) -> QueryResult<()> {
-        use crate::schema::task_tags;
         use crate::schema::tags;
+        use crate::schema::task_tags;
 
         // Ignore errors if the tag already exists.
-        let tag = Tag{name: String::from(tag)};
+        let tag = Tag {
+            name: String::from(tag),
+        };
         diesel::insert_into(tags::table)
             .values(&tag)
-            .execute(conn).ok();
+            .execute(conn)
+            .ok();
 
         let task_tag = TaskTag {
             task_id: self.id,
-            tag_name: tag.name
+            tag_name: tag.name,
         };
         diesel::insert_into(task_tags::table)
             .values(&task_tag)
@@ -157,8 +159,8 @@ impl Task {
     }
 
     pub fn tags(&self, conn: &mut PgConnection) -> QueryResult<Vec<String>> {
-        use crate::schema::task_tags;
         use crate::schema::tags;
+        use crate::schema::task_tags;
         task_tags::table
             .inner_join(tags::table)
             .filter(task_tags::task_id.eq(&self.id))
@@ -170,7 +172,7 @@ impl Task {
         use crate::schema::task_watchers;
         let task_watcher = TaskWatcher {
             task_id: self.id,
-            watcher_id: user_id
+            watcher_id: user_id,
         };
         diesel::insert_into(task_watchers::table)
             .values(&task_watcher)
@@ -180,7 +182,7 @@ impl Task {
 
     pub fn rm_watcher(&self, conn: &mut PgConnection, user_id: Uuid) -> QueryResult<()> {
         use crate::schema::task_watchers;
-       diesel::delete(task_watchers::table)
+        diesel::delete(task_watchers::table)
             .filter(task_watchers::dsl::task_id.eq(self.id))
             .filter(task_watchers::dsl::watcher_id.eq(user_id))
             .execute(conn)?;
@@ -198,15 +200,18 @@ impl Task {
         Ok(users.into_iter().map(|user| user.into()).collect())
     }
 
-    pub fn query(conn: &mut PgConnection,
-                 user_id: Uuid,
-                 query_dict: &HashMap<String, String>,
-                 page: u32,
-                 page_size: u32) -> Vec<Self> {
-        use crate::schema::tasks::dsl::*;
+    pub fn query(
+        conn: &mut PgConnection,
+        user_id: Uuid,
+        query_dict: &HashMap<String, String>,
+        page: u32,
+        page_size: u32,
+    ) -> Vec<Self> {
         use crate::schema::task_projects;
+        use crate::schema::tasks::dsl::*;
 
-        let mut query = tasks.into_boxed()
+        let mut query = tasks
+            .into_boxed()
             .inner_join(task_projects::dsl::task_projects.on(task_projects::dsl::task_id.eq(id)));
 
         for (key, value) in query_dict {
@@ -255,11 +260,12 @@ impl Task {
         let offset = page.saturating_sub(1) * page_size;
 
         match query
-                .limit(page_size as i64)
-                .offset(offset as i64)
-                .load::<Task>(conn) {
+            .limit(page_size as i64)
+            .offset(offset as i64)
+            .load::<Task>(conn)
+        {
             Ok(list) => list,
-            Err(_) => vec![]
+            Err(_) => vec![],
         }
     }
 
@@ -274,11 +280,18 @@ impl Task {
         flows
     }
 
-    pub fn add_link(&self, conn: &mut PgConnection, task_id: Uuid, link_type: TaskLinkType) -> QueryResult<()> {
+    pub fn add_link(
+        &self,
+        conn: &mut PgConnection,
+        task_id: Uuid,
+        link_type: TaskLinkType,
+    ) -> QueryResult<()> {
         use crate::schema::task_links;
-        let task_link = TaskLink{task_from_id: self.id,
-                                 task_to_id: task_id, 
-                                 link_type};
+        let task_link = TaskLink {
+            task_from_id: self.id,
+            task_to_id: task_id,
+            link_type,
+        };
         let data: TaskLinkData = task_link.into();
         diesel::insert_into(task_links::table)
             .values(&data)
@@ -302,30 +315,39 @@ impl Task {
                 let contains_id = valid_transitions.iter().any(|node| node.id == node_id);
                 if contains_id {
                     use crate::schema::task_flows::dsl::*;
-                    diesel::update(task_flows.filter(task_id.eq(self.id))
-                                             .filter(flow_id.eq(flow.flow_id)))
-                        .set(current_node_id.eq(Some(node_id)))
-                        .execute(conn)?;
-                    return Ok(())
+                    diesel::update(
+                        task_flows
+                            .filter(task_id.eq(self.id))
+                            .filter(flow_id.eq(flow.flow_id)),
+                    )
+                    .set(current_node_id.eq(Some(node_id)))
+                    .execute(conn)?;
+                    return Ok(());
                 }
             }
         }
 
         let kind = diesel::result::DatabaseErrorKind::CheckViolation;
-        let msg = Box::new(ValidationErrorMessage{message: format!("No valid transition to {} found", node_id),
-                                                  column: "current_node_id".to_string(),
-                                                  constraint_name: "valid_transition_current_node_id".to_string()});
+        let msg = Box::new(ValidationErrorMessage {
+            message: format!("No valid transition to {} found", node_id),
+            column: "current_node_id".to_string(),
+            constraint_name: "valid_transition_current_node_id".to_string(),
+        });
         Err(diesel::result::Error::DatabaseError(kind, msg))
     }
 
-    pub fn update(&mut self,
-                  conn: &mut PgConnection,
-                  user_id: Uuid,
-                  update: TaskUpdate) -> QueryResult<()> {
+    pub fn update(
+        &mut self,
+        conn: &mut PgConnection,
+        user_id: Uuid,
+        update: TaskUpdate,
+    ) -> QueryResult<()> {
         match update {
-            TaskUpdate::AssignOther{user_id} => self.assign_user(conn, user_id),
+            TaskUpdate::AssignOther { user_id } => self.assign_user(conn, user_id),
             TaskUpdate::AssignSelf => self.assign_user(conn, user_id),
-            TaskUpdate::ChangeDescription { description } => self.set_description(conn, &description),
+            TaskUpdate::ChangeDescription { description } => {
+                self.set_description(conn, &description)
+            }
             TaskUpdate::ChangeTitle { title } => self.set_title(conn, &title),
             TaskUpdate::Link { task_id, link_type } => self.add_link(conn, task_id, link_type),
             TaskUpdate::StopWatchingTask => self.rm_watcher(conn, user_id),
@@ -333,9 +355,9 @@ impl Task {
             TaskUpdate::Transition { node_id } => self.transition(conn, node_id),
             TaskUpdate::Unassign => self.unassign_user(conn),
             TaskUpdate::WatchTask => self.add_watcher(conn, user_id),
-            TaskUpdate::Undo => Ok(()),  // TODO
+            TaskUpdate::Undo => Ok(()), // TODO
             TaskUpdate::Unlink { task_id } => self.rm_link(conn, task_id),
-            TaskUpdate::Untag { name } => self.rm_tag(conn, &name)
+            TaskUpdate::Untag { name } => self.rm_tag(conn, &name),
         }
     }
 
@@ -378,18 +400,35 @@ subseq_util::setup_table_crud!(Task, crate::schema::tasks::dsl::tasks);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum TaskUpdate {
-    AssignOther{user_id: Uuid},
+    AssignOther {
+        user_id: Uuid,
+    },
     AssignSelf,
-    ChangeDescription{description: String},
-    ChangeTitle{title: String},
-    Link{task_id: Uuid, link_type: TaskLinkType},
+    ChangeDescription {
+        description: String,
+    },
+    ChangeTitle {
+        title: String,
+    },
+    Link {
+        task_id: Uuid,
+        link_type: TaskLinkType,
+    },
     StopWatchingTask,
-    Tag{name: String},
-    Transition{node_id: Uuid},
+    Tag {
+        name: String,
+    },
+    Transition {
+        node_id: Uuid,
+    },
     Unassign,
     Undo,
-    Unlink{task_id: Uuid},
-    Untag{name: String},
+    Unlink {
+        task_id: Uuid,
+    },
+    Untag {
+        name: String,
+    },
     WatchTask,
 }
 
@@ -424,7 +463,7 @@ pub struct TaskFlow {
     pub task_id: Uuid,
     pub flow_id: Uuid,
     pub current_node_id: Option<Uuid>,
-    pub order_added: i32
+    pub order_added: i32,
 }
 
 /// Gets the FlowNode active from a list of TaskFlows
@@ -435,9 +474,11 @@ impl TaskFlow {
             Some(flow) => flow,
             None => {
                 let kind = diesel::result::DatabaseErrorKind::CheckViolation;
-                let msg = Box::new(ValidationErrorMessage{message: "Task is missing a flow".to_string(),
-                                                          column: "task_id".to_string(),
-                                                          constraint_name: "task_flow_required".to_string()});
+                let msg = Box::new(ValidationErrorMessage {
+                    message: "Task is missing a flow".to_string(),
+                    column: "task_id".to_string(),
+                    constraint_name: "task_flow_required".to_string(),
+                });
                 return Err(diesel::result::Error::DatabaseError(kind, msg));
             }
         };
@@ -446,11 +487,11 @@ impl TaskFlow {
             Some(node_id) => node_id,
             None => {
                 let kind = diesel::result::DatabaseErrorKind::CheckViolation;
-                let msg = Box::new(ValidationErrorMessage{
+                let msg = Box::new(ValidationErrorMessage {
                     message: "TaskFlow has no valid node id".to_string(),
                     column: "current_node_id".to_string(),
-                    constraint_name: "task_flow_current_node_id_null".to_string()}
-                );
+                    constraint_name: "task_flow_current_node_id_null".to_string(),
+                });
                 return Err(diesel::result::Error::DatabaseError(kind, msg));
             }
         };
@@ -459,11 +500,11 @@ impl TaskFlow {
             Some(node) => Ok(node),
             None => {
                 let kind = diesel::result::DatabaseErrorKind::CheckViolation;
-                let msg = Box::new(ValidationErrorMessage{
+                let msg = Box::new(ValidationErrorMessage {
                     message: "FlowNode is missing".to_string(),
                     column: "current_node_id".to_string(),
-                    constraint_name: "task_flow_current_node_id_exists".to_string()}
-                );
+                    constraint_name: "task_flow_current_node_id_exists".to_string(),
+                });
                 return Err(diesel::result::Error::DatabaseError(kind, msg));
             }
         }
@@ -482,7 +523,7 @@ pub struct TaskLink {
 pub enum TaskLinkType {
     SubtaskOf,
     DependsOn,
-    RelatedTo
+    RelatedTo,
 }
 
 impl TryFrom<i32> for TaskLinkType {
@@ -492,7 +533,7 @@ impl TryFrom<i32> for TaskLinkType {
             0 => Ok(Self::SubtaskOf),
             1 => Ok(Self::DependsOn),
             2 => Ok(Self::RelatedTo),
-            unk => Err(unk)
+            unk => Err(unk),
         }
     }
 }
@@ -521,35 +562,47 @@ struct TaskLinkData {
 
 impl From<TaskLink> for TaskLinkData {
     fn from(link: TaskLink) -> TaskLinkData {
-        let TaskLink{task_from_id, task_to_id, link_type} = link;
+        let TaskLink {
+            task_from_id,
+            task_to_id,
+            link_type,
+        } = link;
         TaskLinkData {
             task_from_id,
             task_to_id,
-            link_type: link_type.into()
+            link_type: link_type.into(),
         }
     }
 }
 
 impl From<TaskLinkData> for TaskLink {
     fn from(link: TaskLinkData) -> TaskLink {
-        let TaskLinkData{task_from_id, task_to_id, link_type} = link;
+        let TaskLinkData {
+            task_from_id,
+            task_to_id,
+            link_type,
+        } = link;
         TaskLink {
             task_from_id,
             task_to_id,
-            link_type: link_type.try_into().unwrap()
+            link_type: link_type.try_into().unwrap(),
         }
     }
 }
 
 impl TaskLink {
-    pub fn create(conn: &mut PgConnection,
-                  link_from: &Task,
-                  link_to: &Task,
-                  link_type: TaskLinkType) -> QueryResult<Self> {
+    pub fn create(
+        conn: &mut PgConnection,
+        link_from: &Task,
+        link_to: &Task,
+        link_type: TaskLinkType,
+    ) -> QueryResult<Self> {
         use crate::schema::task_links;
-        let task_link = TaskLink{task_from_id: link_from.id,
-                                 task_to_id: link_to.id, 
-                                 link_type};
+        let task_link = TaskLink {
+            task_from_id: link_from.id,
+            task_to_id: link_to.id,
+            link_type,
+        };
         let data: TaskLinkData = task_link.into();
         diesel::insert_into(task_links::table)
             .values(&data)
@@ -577,28 +630,36 @@ impl TaskLink {
 #[cfg(test)]
 mod test {
     use super::*;
-    use uuid::Uuid;
+    use crate::tables::test::MIGRATIONS;
+    use function_name::named;
     use subseq_util::tables::harness::{to_pg_db_name, DbHarness};
     use subseq_util::tables::UserTable;
-    use function_name::named;
-    use crate::tables::test::MIGRATIONS;
+    use uuid::Uuid;
 
     #[test]
     #[named]
     fn test_task_handle() {
         let db_name = to_pg_db_name(function_name!());
-        let harness = DbHarness::new("localhost", "development", &db_name,
-                                     Some(MIGRATIONS));
-        let mut conn = harness.conn(); 
+        let harness = DbHarness::new("localhost", "development", &db_name, Some(MIGRATIONS));
+        let mut conn = harness.conn();
 
-        let user = User::create(&mut conn, Uuid::new_v4(), "test@example.com", Some("test_user")).expect("user");
-        let mut proj = Project::create(
+        let user = User::create(
             &mut conn,
+            Uuid::new_v4(),
+            "test@example.com",
+            Some("test_user"),
+        )
+        .expect("user");
+        let mut proj = Project::create(&mut conn, &user, "proj", "", None).expect("proj");
+        let task = Task::create(
+            &mut conn,
+            Uuid::new_v4(),
+            &mut proj,
+            "Task 1",
+            "Do this",
             &user,
-            "proj",
-            "",
-            None).expect("proj");
-        let task = Task::create(&mut conn, Uuid::new_v4(), &mut proj, "Task 1", "Do this", &user).expect("task");
+        )
+        .expect("task");
         let task2 = Task::get(&mut conn, task.id).expect("task2");
 
         assert_eq!(task.slug, "PROJ-1");

@@ -160,7 +160,7 @@ pub mod auth {
     }
 }
 
-pub use auth::{users, user_id_accounts, portraits, metadata};
+pub use auth::{metadata, portraits, user_id_accounts, users};
 
 diesel::joinable!(active_projects -> users (user_id));
 diesel::joinable!(active_projects -> projects (project_id));

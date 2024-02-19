@@ -12,21 +12,17 @@ use subseq_util::tables::{DbPool, UserTable};
 use tokio::spawn;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::api::prompts::{InitializePromptChannel, PromptTx, PromptRx};
+use crate::api::prompts::{InitializePromptChannel, PromptRx, PromptTx};
 use crate::api::tasks::TaskRun;
 use crate::api::voice::{
-    SpeechToText,
-    SpeechToTextResponse,
-    SpeechToTextRequest,
-    VoiceResponseCollection
+    SpeechToText, SpeechToTextRequest, SpeechToTextResponse, VoiceResponseCollection,
 };
 use crate::{
-    interop::{Job, JobResult},
-    tables::{Project, Task, Flow, Graph, User},
+    api::prompts::PromptResponseCollection,
     api::tasks::TaskStatePayload,
-    api::prompts::PromptResponseCollection
+    interop::{Job, JobResult},
+    tables::{Flow, Graph, Project, Task, User},
 };
-
 
 pub fn prism_url(host: &str, port: u16) -> String {
     format!("ws://{}:{}", host, port)
@@ -51,40 +47,77 @@ const PROJECT_UPDATED_BEAM: &str = "urn:subseq.io:tasks:project:updated";
 const FLOW_CREATED_BEAM: &str = "urn:subseq.io:tasks:workflow:created";
 const FLOW_UPDATED_BEAM: &str = "urn:subseq.io:tasks:workflow:updated";
 
-
 async fn setup_user_beams(client: &mut AsyncClient) {
-    client.add_beam(USER_CREATED_BEAM).await.expect("Failed setting up client");
-    client.add_beam(USER_UPDATED_BEAM).await.expect("Failed setting up client");
+    client
+        .add_beam(USER_CREATED_BEAM)
+        .await
+        .expect("Failed setting up client");
+    client
+        .add_beam(USER_UPDATED_BEAM)
+        .await
+        .expect("Failed setting up client");
 
-    client.subscribe(USER_CREATED_BEAM, None).await.expect("Failed subscribing");
-    client.subscribe(USER_UPDATED_BEAM, None).await.expect("Failed subscribing");
+    client
+        .subscribe(USER_CREATED_BEAM, None)
+        .await
+        .expect("Failed subscribing");
+    client
+        .subscribe(USER_UPDATED_BEAM, None)
+        .await
+        .expect("Failed subscribing");
 }
-
 
 async fn setup_job_beams(client: &mut AsyncClient) {
-    client.subscribe(JOB_RESULT_BEAM, None).await.expect("Failed subscribing");
-    client.subscribe(JOB_CREATED_BEAM, None).await.expect("Failed subscribing");
+    client
+        .subscribe(JOB_RESULT_BEAM, None)
+        .await
+        .expect("Failed subscribing");
+    client
+        .subscribe(JOB_CREATED_BEAM, None)
+        .await
+        .expect("Failed subscribing");
 }
 
-
 async fn setup_task_beams(client: &mut AsyncClient) {
-    client.add_beam(TASK_CREATED_BEAM).await.expect("Failed setting up client");
-    client.add_beam(TASK_UPDATED_BEAM).await.expect("Failed setting up client");
-    client.add_beam(TASK_ASSIGNEE_BEAM).await.expect("Failed setting up client");
-    client.add_beam(TASK_STATE_BEAM).await.expect("Failed setting up client");
+    client
+        .add_beam(TASK_CREATED_BEAM)
+        .await
+        .expect("Failed setting up client");
+    client
+        .add_beam(TASK_UPDATED_BEAM)
+        .await
+        .expect("Failed setting up client");
+    client
+        .add_beam(TASK_ASSIGNEE_BEAM)
+        .await
+        .expect("Failed setting up client");
+    client
+        .add_beam(TASK_STATE_BEAM)
+        .await
+        .expect("Failed setting up client");
 }
 
 async fn setup_project_beams(client: &mut AsyncClient) {
-    client.add_beam(PROJECT_CREATED_BEAM).await.expect("Failed setting up client");
-    client.add_beam(PROJECT_UPDATED_BEAM).await.expect("Failed setting up client");
+    client
+        .add_beam(PROJECT_CREATED_BEAM)
+        .await
+        .expect("Failed setting up client");
+    client
+        .add_beam(PROJECT_UPDATED_BEAM)
+        .await
+        .expect("Failed setting up client");
 }
-
 
 async fn setup_flow_beams(client: &mut AsyncClient) {
-    client.add_beam(FLOW_CREATED_BEAM).await.expect("Failed setting up client");
-    client.add_beam(FLOW_UPDATED_BEAM).await.expect("Failed setting up client");
+    client
+        .add_beam(FLOW_CREATED_BEAM)
+        .await
+        .expect("Failed setting up client");
+    client
+        .add_beam(FLOW_UPDATED_BEAM)
+        .await
+        .expect("Failed setting up client");
 }
-
 
 fn gen_rand() -> String {
     rand::thread_rng()
@@ -110,13 +143,15 @@ fn gen_prompt_beams() -> (String, String) {
 #[derive(Clone)]
 pub struct UserCreated(pub User);
 
-pub fn create_users_from_events(mut user_created_rx: broadcast::Receiver<UserCreated>,
-                                db_pool: Arc<DbPool>) {
+pub fn create_users_from_events(
+    mut user_created_rx: broadcast::Receiver<UserCreated>,
+    db_pool: Arc<DbPool>,
+) {
     spawn(async move {
         while let Ok(created_user) = user_created_rx.recv().await {
             let mut conn = match db_pool.get() {
                 Ok(conn) => conn,
-                Err(_) => return
+                Err(_) => return,
             };
             let user = created_user.0;
             if User::get(&mut conn, user.id).is_none() {
@@ -129,7 +164,7 @@ pub fn create_users_from_events(mut user_created_rx: broadcast::Receiver<UserCre
 #[derive(Serialize)]
 struct PromptTxWrapper {
     prompt_tx: PromptTx,
-    beam: String
+    beam: String,
 }
 
 struct WaveletHandler {
@@ -148,13 +183,17 @@ impl Future for WaveletHandler {
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let Wavelet { beam, photons } = &this.wavelet;
-        match beam.as_str() { 
+        match beam.as_str() {
             JOB_RESULT_BEAM => {
                 for photon in photons {
                     let result: JobResult = match serde_json::from_slice(&photon.payload) {
                         Ok(ok) => ok,
                         Err(err) => {
-                            tracing::error!("Received invalid Photon on {}: {:?}", JOB_RESULT_BEAM, err);
+                            tracing::error!(
+                                "Received invalid Photon on {}: {:?}",
+                                JOB_RESULT_BEAM,
+                                err
+                            );
                             continue;
                         }
                     };
@@ -166,7 +205,11 @@ impl Future for WaveletHandler {
                     let result: Job = match serde_json::from_slice(&photon.payload) {
                         Ok(ok) => ok,
                         Err(err) => {
-                            tracing::error!("Received invalid Photon on {}: {:?}", JOB_RESULT_BEAM, err);
+                            tracing::error!(
+                                "Received invalid Photon on {}: {:?}",
+                                JOB_RESULT_BEAM,
+                                err
+                            );
                             continue;
                         }
                     };
@@ -188,13 +231,18 @@ impl Future for WaveletHandler {
             b => {
                 if b == this.voice_beam {
                     for photon in photons {
-                        let result: SpeechToTextResponse = match serde_cbor::from_slice(&photon.payload) {
-                            Ok(ok) => ok,
-                            Err(err) => {
-                                tracing::error!("Received invalid Photon on {}: {:?}", JOB_RESULT_BEAM, err);
-                                continue;
-                            }
-                        };
+                        let result: SpeechToTextResponse =
+                            match serde_cbor::from_slice(&photon.payload) {
+                                Ok(ok) => ok,
+                                Err(err) => {
+                                    tracing::error!(
+                                        "Received invalid Photon on {}: {:?}",
+                                        JOB_RESULT_BEAM,
+                                        err
+                                    );
+                                    continue;
+                                }
+                            };
                         this.voice_requests.send_response(result);
                     }
                 } else if b == this.prompt_beam {
@@ -202,9 +250,14 @@ impl Future for WaveletHandler {
                         let result: PromptRx = match serde_json::from_slice(&photon.payload) {
                             Ok(ok) => ok,
                             Err(err) => {
-                                let payload = String::from_utf8(photon.payload.clone()).unwrap_or_default();
-                                tracing::error!("Received invalid Photon on {}: {:?}\n{}",
-                                                this.prompt_beam, err, payload);
+                                let payload =
+                                    String::from_utf8(photon.payload.clone()).unwrap_or_default();
+                                tracing::error!(
+                                    "Received invalid Photon on {}: {:?}\n{}",
+                                    this.prompt_beam,
+                                    err,
+                                    payload
+                                );
                                 continue;
                             }
                         };
@@ -220,7 +273,6 @@ impl Future for WaveletHandler {
     }
 }
 
-
 pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
     // Tables
     let mut user_rx: broadcast::Receiver<User> = router.subscribe();
@@ -234,7 +286,8 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
     let mut graph_rx: broadcast::Receiver<Graph> = router.subscribe();
 
     // Voice
-    let mut voice_rx: mpsc::Receiver<(SpeechToText, oneshot::Sender<SpeechToTextResponse>)> = router.create_channel();
+    let mut voice_rx: mpsc::Receiver<(SpeechToText, oneshot::Sender<SpeechToTextResponse>)> =
+        router.create_channel();
     let voice_requests = VoiceResponseCollection::new();
     let handler_voice_requests = voice_requests.clone();
 
@@ -259,17 +312,15 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
         let voice_beam = voice_response_beam.clone();
         let prompt_beam = prompt_response_beam.clone();
 
-        let handle_tasks = move |wavelet: Wavelet| {
-            WaveletHandler {
-                job_result_tx: job_result_tx.clone(),
-                job_created_tx: job_tx.clone(),
-                user_created_tx: user_created_tx.clone(),
-                prompt_requests: handler_requests.clone(),
-                prompt_beam: prompt_beam.clone(),
-                voice_requests: handler_voice_requests.clone(),
-                voice_beam: voice_beam.clone(),
-                wavelet
-            }
+        let handle_tasks = move |wavelet: Wavelet| WaveletHandler {
+            job_result_tx: job_result_tx.clone(),
+            job_created_tx: job_tx.clone(),
+            user_created_tx: user_created_tx.clone(),
+            prompt_requests: handler_requests.clone(),
+            prompt_beam: prompt_beam.clone(),
+            voice_requests: handler_voice_requests.clone(),
+            voice_beam: voice_beam.clone(),
+            wavelet,
         };
 
         let mut client = match AsyncClient::connect(uri, handle_tasks).await {
@@ -281,10 +332,22 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
         };
         tracing::info!("Zini connected to prism!");
 
-        client.add_beam(&voice_request_beam).await.expect("Failed setting up client");
-        client.subscribe(&voice_response_beam, None).await.expect("Failed subscribing");
-        client.add_beam(&prompt_request_beam).await.expect("Failed setting up client");
-        client.subscribe(&prompt_response_beam, None).await.expect("Failed subscribing");
+        client
+            .add_beam(&voice_request_beam)
+            .await
+            .expect("Failed setting up client");
+        client
+            .subscribe(&voice_response_beam, None)
+            .await
+            .expect("Failed subscribing");
+        client
+            .add_beam(&prompt_request_beam)
+            .await
+            .expect("Failed setting up client");
+        client
+            .subscribe(&prompt_response_beam, None)
+            .await
+            .expect("Failed subscribing");
 
         setup_user_beams(&mut client).await;
         setup_job_beams(&mut client).await;

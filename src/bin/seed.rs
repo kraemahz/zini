@@ -11,7 +11,7 @@ struct Args {
     #[arg(long)]
     database: String,
     base_user_id: Uuid,
-    base_user_email: String
+    base_user_email: String,
 }
 
 fn main() -> QueryResult<()> {
@@ -25,7 +25,7 @@ fn main() -> QueryResult<()> {
 fn seed_data(conn: &mut PgConnection, user_id: Uuid, user_email: String) -> QueryResult<()> {
     let user = match User::get(conn, user_id) {
         Some(user) => user,
-        None => User::create(conn, user_id, &user_email, None)?
+        None => User::create(conn, user_id, &user_email, None)?,
     };
 
     let entry_node = FlowNode::create(conn, "OPEN")?;
@@ -33,18 +33,22 @@ fn seed_data(conn: &mut PgConnection, user_id: Uuid, user_email: String) -> Quer
     let exits = vec![&exit_node];
     let graph = vec![(&entry_node, &exit_node)];
 
-    let flow = Flow::create(conn,
-                            &user,
-                            "Default".to_string(), 
-                            "This is the default flow".to_string(),
-                            &entry_node,
-                            graph,
-                            exits)?;
-
+    let flow = Flow::create(
+        conn,
+        &user,
+        "Default".to_string(),
+        "This is the default flow".to_string(),
+        &entry_node,
+        graph,
+        exits,
+    )?;
 
     println!("Created User: {}", serde_json::to_string(&user).unwrap());
     println!("Created Flow: {}", serde_json::to_string(&flow).unwrap());
-    println!("Entry Node: {}", serde_json::to_string(&entry_node).unwrap());
+    println!(
+        "Entry Node: {}",
+        serde_json::to_string(&entry_node).unwrap()
+    );
     println!("Exit Node: {}", serde_json::to_string(&exit_node).unwrap());
 
     Ok(())

@@ -1,7 +1,6 @@
-use uuid::Uuid;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-
+use uuid::Uuid;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct JobResult {

@@ -4,20 +4,17 @@ use std::sync::Arc;
 
 use clap::Parser;
 use subseq_util::{
-    Router,
-    BaseConfig,
-    InnerConfig,
-    tracing::setup_tracing,
+    api::{handle_rejection, init_session_store, sessions, users as util_users},
+    oidc::{init_client_pool, IdentityProvider, OidcCredentials},
     tables::establish_connection_pool,
-    api::{sessions, handle_rejection, init_session_store, users as util_users},
-    oidc::{init_client_pool, IdentityProvider, OidcCredentials}
+    tracing::setup_tracing,
+    BaseConfig, InnerConfig, Router,
 };
-use warp::{Filter, reject::Rejection};
+use warp::{reject::Rejection, Filter};
 
 use zini::api::*;
-use zini::tables::User;
 use zini::events;
-
+use zini::tables::User;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -33,7 +30,9 @@ async fn main() {
     let args = Args::parse();
     let conf_file = File::open(args.conf).expect("Could not open file");
     let conf: BaseConfig = serde_json::from_reader(conf_file).expect("Reading config failed");
-    let conf: InnerConfig = conf.try_into().expect("Could not fetch all secrets from environment");
+    let conf: InnerConfig = conf
+        .try_into()
+        .expect("Could not fetch all secrets from environment");
 
     // Database and events
     let database_url = conf.database.db_url("zini");
@@ -44,18 +43,27 @@ async fn main() {
     // OIDC
     let (idp, tls) = match conf.oidc.as_ref() {
         Some(oidc_conf) => {
-            let tls = conf.tls.as_ref().expect("Must define TLS conf with OIDC conf");
+            let tls = conf
+                .tls
+                .as_ref()
+                .expect("Must define TLS conf with OIDC conf");
             init_client_pool(tls.ca_path.as_str());
             let redirect_url = format!("https://localhost:{ZINI_PORT}/auth");
-            let oidc = OidcCredentials::new(oidc_conf.client_id.as_str(),
-                                            oidc_conf.client_secret.clone().expect("No OIDC Client Secret"),
-                                            redirect_url)
-                .expect("Invalid OIDC Credentials");
-            let idp = IdentityProvider::new(&oidc, &oidc_conf.idp_url.to_string()).await
+            let oidc = OidcCredentials::new(
+                oidc_conf.client_id.as_str(),
+                oidc_conf
+                    .client_secret
+                    .clone()
+                    .expect("No OIDC Client Secret"),
+                redirect_url,
+            )
+            .expect("Invalid OIDC Credentials");
+            let idp = IdentityProvider::new(&oidc, &oidc_conf.idp_url.to_string())
+                .await
                 .expect("Failed to establish Identity Provider connection");
             (Some(Arc::new(idp)), Some(tls))
         }
-        None => (None, None)
+        None => (None, None),
     };
 
     // Server setup
@@ -66,28 +74,45 @@ async fn main() {
     prompts::instruction_channel_task(pool.clone(), &mut router);
 
     let log_requests = warp::log::custom(|info| {
-        tracing::info!("{} {} {} {}",
-                       info.remote_addr()
-                           .map(|addr| addr.to_string())
-                           .unwrap_or_else(|| "???".into()),
-                       info.method(),
-                       info.path(),
-                       info.status());
+        tracing::info!(
+            "{} {} {} {}",
+            info.remote_addr()
+                .map(|addr| addr.to_string())
+                .unwrap_or_else(|| "???".into()),
+            info.method(),
+            info.path(),
+            info.status()
+        );
     });
 
     let probe = warp::path("probe")
         .and(warp::get())
-        .and_then(|| async {Ok::<_, Rejection>(warp::reply::html("<html>up</html>"))});
+        .and_then(|| async { Ok::<_, Rejection>(warp::reply::html("<html>up</html>")) });
     let frontend = warp::path::end().and(warp::fs::file("dist/index.html"));
     let ico = warp::path("favicon.ico").and(warp::fs::file("dist/favicon.ico"));
     let logo = warp::path("subseq-logo.svg").and(warp::fs::file("dist/subseq-logo.svg"));
     let assets = warp::path("assets").and(warp::fs::dir("dist/assets"));
 
     let routes = projects::routes(idp.clone(), session.clone(), pool.clone(), &mut router)
-        .or(util_users::routes::<User>(idp.clone(), session.clone(), pool.clone(), &mut router))
+        .or(util_users::routes::<User>(
+            idp.clone(),
+            session.clone(),
+            pool.clone(),
+            &mut router,
+        ))
         .or(users::routes(idp.clone(), session.clone(), pool.clone()))
-        .or(tasks::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
-        .or(flows::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
+        .or(tasks::routes(
+            idp.clone(),
+            session.clone(),
+            pool.clone(),
+            &mut router,
+        ))
+        .or(flows::routes(
+            idp.clone(),
+            session.clone(),
+            pool.clone(),
+            &mut router,
+        ))
         .or(socket::routes(idp.clone(), session.clone(), &mut router))
         .or(probe)
         .or(frontend)
@@ -96,7 +121,8 @@ async fn main() {
         .or(assets);
 
     if let Some(idp) = idp {
-        let routes = routes.or(sessions::routes(session, idp))
+        let routes = routes
+            .or(sessions::routes(session, idp))
             .recover(handle_rejection)
             .with(log_requests);
         let tls = tls.unwrap();
@@ -104,9 +130,11 @@ async fn main() {
             .tls()
             .cert_path(tls.cert_path.as_str())
             .key_path(tls.key_path.as_str())
-            .run(([127, 0, 0, 1], ZINI_PORT)).await;
+            .run(([127, 0, 0, 1], ZINI_PORT))
+            .await;
     } else {
-        let routes = routes.or(sessions::no_auth_routes(session))
+        let routes = routes
+            .or(sessions::no_auth_routes(session))
             .recover(handle_rejection)
             .with(log_requests);
         warp::serve(routes).run(([127, 0, 0, 1], ZINI_PORT)).await;

@@ -2,8 +2,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde::{Serialize, Deserialize};
-use tokio::{sync::{mpsc, oneshot}, task::spawn, time::timeout};
+use serde::{Deserialize, Serialize};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::spawn,
+    time::timeout,
+};
 use uuid::Uuid;
 
 use super::prompts::ChatCompletion;
@@ -12,13 +16,13 @@ use super::prompts::ChatCompletion;
 pub enum AudioContext {
     Discover,
     Search,
-    Instruct
+    Instruct,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AudioContextResponse {
     Search(String),
-    Instruct(ChatCompletion)
+    Instruct(ChatCompletion),
 }
 pub type AudioDataChannel = (AudioContext, AudioData);
 pub type AudioEventChannel = (SpeechToText, oneshot::Sender<SpeechToTextResponse>);
@@ -30,11 +34,11 @@ pub struct AudioData {
 }
 
 #[derive(Clone, Debug)]
-pub struct SpeechToText{
+pub struct SpeechToText {
     pub conversation_id: Uuid,
     pub payload: Vec<u8>,
     pub count: usize,
-    pub finalize: bool
+    pub finalize: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -43,7 +47,7 @@ pub struct SpeechToTextRequest {
     pub payload: Vec<u8>,
     pub count: usize,
     pub beam: String,
-    pub finalize: bool
+    pub finalize: bool,
 }
 
 impl SpeechToTextRequest {
@@ -53,7 +57,7 @@ impl SpeechToTextRequest {
             payload: stt.payload,
             count: stt.count,
             beam,
-            finalize: stt.finalize
+            finalize: stt.finalize,
         }
     }
 }
@@ -63,7 +67,7 @@ pub struct SpeechToTextResponse {
     pub conversation_id: Uuid,
     pub count: usize,
     pub payload: String,
-    pub finalized: bool
+    pub finalized: bool,
 }
 
 pub fn create_audio_timing_task(
@@ -92,7 +96,7 @@ pub fn create_audio_timing_task(
                             conversation_id,
                             count: n_messages,
                             payload,
-                            finalize: true
+                            finalize: true,
                         };
                         n_messages += 1;
                         let (tx, rx) = oneshot::channel();
@@ -111,7 +115,7 @@ pub fn create_audio_timing_task(
                 }
             };
 
-            if let Some((new_context, AudioData{payload, count: _})) = stt {
+            if let Some((new_context, AudioData { payload, count: _ })) = stt {
                 stream = match stream.take() {
                     Some(mut audio) => {
                         audio.extend(payload);
@@ -130,19 +134,26 @@ pub fn create_audio_timing_task(
 
 #[derive(Clone, Debug)]
 pub struct VoiceResponseCollection {
-    inner: Arc<Mutex<HashMap<(Uuid, usize), oneshot::Sender<SpeechToTextResponse>>>>
+    inner: Arc<Mutex<HashMap<(Uuid, usize), oneshot::Sender<SpeechToTextResponse>>>>,
 }
 
 impl VoiceResponseCollection {
     pub fn new() -> Self {
-        Self { inner: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
-    pub fn insert(&self,
-                  conversation_id: Uuid,
-                  count: usize,
-                  sender: oneshot::Sender<SpeechToTextResponse>) {
-        self.inner.lock().unwrap().insert((conversation_id, count), sender);
+    pub fn insert(
+        &self,
+        conversation_id: Uuid,
+        count: usize,
+        sender: oneshot::Sender<SpeechToTextResponse>,
+    ) {
+        self.inner
+            .lock()
+            .unwrap()
+            .insert((conversation_id, count), sender);
     }
 
     pub fn send_response(&self, voice_response: SpeechToTextResponse) {

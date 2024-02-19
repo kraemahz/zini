@@ -1,26 +1,26 @@
 use std::sync::Arc;
 
+use crate::tables::{User, UserIdAccount, UserMetadata, UserPortrait};
 use bytes::Buf;
-use diesel::{PgConnection, QueryResult};
 use chrono::NaiveDateTime;
-use futures::{TryStreamExt, StreamExt};
+use diesel::{PgConnection, QueryResult};
+use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
-use subseq_util::api::InvalidConfigurationError;
 use subseq_util::api::sessions::store_auth_cookie;
+use subseq_util::api::InvalidConfigurationError;
 use subseq_util::{
-    api::{AuthenticatedUser, DatabaseError, authenticate, with_db},
+    api::{authenticate, with_db, AuthenticatedUser, DatabaseError},
     oidc::IdentityProvider,
-    tables::{DbPool, UserTable}
+    tables::{DbPool, UserTable},
 };
 use uuid::Uuid;
-use warp::{Filter, http::Response, reply::Reply, reject::Rejection};
-use warp_sessions::{MemoryStore, SessionWithStore};
 use warp::multipart::FormData;
-use crate::tables::{UserIdAccount, User, UserMetadata, UserPortrait};
+use warp::{http::Response, reject::Rejection, reply::Reply, Filter};
+use warp_sessions::{MemoryStore, SessionWithStore};
 
 #[derive(Deserialize, Serialize)]
 pub struct StoredUserMeta {
-    job_title: String
+    job_title: String,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -29,7 +29,7 @@ pub struct DenormalizedUser {
     pub created: NaiveDateTime,
     pub username: String,
     pub job_title: String,
-    pub job_id: Option<String>
+    pub job_id: Option<String>,
 }
 
 impl DenormalizedUser {
@@ -38,42 +38,46 @@ impl DenormalizedUser {
     pub fn denormalize(conn: &mut PgConnection, user: User) -> QueryResult<Self> {
         let username = match UserIdAccount::get(conn, user.id) {
             Some(uida) => uida.username,
-            None => user.email.clone()
+            None => user.email.clone(),
         };
         let job_title = match UserMetadata::get(conn, user.id) {
             Some(umeta) => match serde_json::from_value::<StoredUserMeta>(umeta.data) {
                 Ok(sumeta) => sumeta.job_title,
-                Err(_) => Self::TITLE_MISSING.to_string()
-            }
-            None => Self::TITLE_MISSING.to_string()
+                Err(_) => Self::TITLE_MISSING.to_string(),
+            },
+            None => Self::TITLE_MISSING.to_string(),
         };
         Ok(Self {
             id: user.id,
             created: user.created,
             username,
             job_title,
-            job_id: None
+            job_id: None,
         })
     }
 }
 
-async fn get_image(user_id: Uuid,
-                   _auth: AuthenticatedUser,
-                   session: SessionWithStore<MemoryStore>,
-                   db_pool: Arc<DbPool>
+async fn get_image(
+    user_id: Uuid,
+    _auth: AuthenticatedUser,
+    session: SessionWithStore<MemoryStore>,
+    db_pool: Arc<DbPool>,
 ) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
-        Err(_) => return Err(warp::reject::custom(DatabaseError{})),
+        Err(_) => return Err(warp::reject::custom(DatabaseError {})),
     };
     let portrait = match UserPortrait::get(&mut conn, user_id) {
         Some(portrait) => portrait,
-        None => return Err(warp::reject::not_found())
+        None => return Err(warp::reject::not_found()),
     };
-    Ok((Response::builder()
-       .header("Content-Type", "image/webp")
-       .body(portrait.portrait)
-       .unwrap(), session))
+    Ok((
+        Response::builder()
+            .header("Content-Type", "image/webp")
+            .body(portrait.portrait)
+            .unwrap(),
+        session,
+    ))
 }
 
 const USER_PAGE_SIZE: u32 = 20;
@@ -82,7 +86,7 @@ pub async fn list_users_handler(
     page: u32,
     _auth_user: AuthenticatedUser,
     session: SessionWithStore<MemoryStore>,
-    db_pool: Arc<DbPool>
+    db_pool: Arc<DbPool>,
 ) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
     let mut conn = match db_pool.get() {
         Ok(conn) => conn,
@@ -92,7 +96,7 @@ pub async fn list_users_handler(
     let mut denorm_users = Vec::new();
     for user in users {
         let denorm_user = DenormalizedUser::denormalize(&mut conn, user)
-            .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+            .map_err(|_| warp::reject::custom(DatabaseError {}))?;
         denorm_users.push(denorm_user);
     }
     Ok((warp::reply::json(&denorm_users), session))
@@ -105,29 +109,31 @@ pub async fn upload_portrait_handler(
     session: SessionWithStore<MemoryStore>,
     db_pool: Arc<DbPool>,
 ) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
-
     let mut parts = form_data.into_stream();
     let mut file_data = vec![];
 
-    while let Some(Ok(part)) = parts.next().await
-    {
-        let data = part.stream().try_fold(Vec::new(), |mut acc, buf| async move {
-            acc.extend_from_slice(buf.chunk());
-            Ok(acc)
-        })
-        .await
-        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+    while let Some(Ok(part)) = parts.next().await {
+        let data = part
+            .stream()
+            .try_fold(Vec::new(), |mut acc, buf| async move {
+                acc.extend_from_slice(buf.chunk());
+                Ok(acc)
+            })
+            .await
+            .map_err(|_| warp::reject::custom(DatabaseError {}))?;
         file_data.extend_from_slice(&data);
     }
 
     if file_data.is_empty() {
-        return Err(warp::reject::custom(InvalidConfigurationError{}));
+        return Err(warp::reject::custom(InvalidConfigurationError {}));
     }
     tracing::info!("Portrait with {} bytes", file_data.len());
-    let mut conn = db_pool.get().map_err(|_| warp::reject::custom(DatabaseError{}))?;
+    let mut conn = db_pool
+        .get()
+        .map_err(|_| warp::reject::custom(DatabaseError {}))?;
 
     let portrait = UserPortrait::create(&mut conn, user_id, file_data)
-        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+        .map_err(|_| warp::reject::custom(DatabaseError {}))?;
     Ok((warp::reply::json(&portrait), session))
 }
 
