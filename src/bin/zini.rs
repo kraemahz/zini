@@ -58,7 +58,7 @@ async fn main() {
                 redirect_url,
             )
             .expect("Invalid OIDC Credentials");
-            let idp = IdentityProvider::new(&oidc, &oidc_conf.idp_url.to_string())
+            let idp = IdentityProvider::new(&oidc, oidc_conf.idp_url.as_ref())
                 .await
                 .expect("Failed to establish Identity Provider connection");
             (Some(Arc::new(idp)), Some(tls))

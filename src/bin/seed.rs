@@ -17,7 +17,7 @@ struct Args {
 fn main() -> QueryResult<()> {
     let args = Args::parse();
     let mut conn = PgConnection::establish(&args.database)
-        .expect(&format!("Failed to connect to database: {}", args.database));
+        .unwrap_or_else(|_| panic!("Failed to connect to database: {}", args.database));
 
     seed_data(&mut conn, args.base_user_id, args.base_user_email)
 }

@@ -40,10 +40,10 @@ impl Flow {
     where
         C: Connection<Backend = Pg> + LoadConnection,
     {
-        let sinks: Vec<_> = graph.iter().map(|(_, &ref sink)| sink).collect();
-        let sources: Vec<_> = graph.iter().map(|(&ref source, _)| source).collect();
+        let sinks: Vec<&FlowNode> = graph.iter().map(|&(_, sink)| sink).collect();
+        let sources: Vec<&FlowNode> = graph.iter().map(|&(source, _)| source).collect();
 
-        let exits_not_in_graph = !exits.iter().any(|e| sinks.contains(e));
+        let exits_not_in_graph = !exits.iter().any(|e: &&FlowNode| sinks.contains(e));
         let entry_not_in_graph = !sources.contains(&entry_node);
 
         if graph.is_empty() || exits_not_in_graph || entry_not_in_graph || exits.is_empty() {
@@ -286,7 +286,7 @@ impl FlowExit {
             diesel::insert_into(crate::schema::flow_exits::table)
                 .values(&new_exit)
                 .execute(conn)?;
-            FlowAssignment::assign(conn, flow_id, &node)?;
+            FlowAssignment::assign(conn, flow_id, node)?;
         }
         Ok(())
     }

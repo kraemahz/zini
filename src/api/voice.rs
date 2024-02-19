@@ -132,9 +132,11 @@ pub fn create_audio_timing_task(
     });
 }
 
+type InnerVoiceResponseCollection = HashMap<(Uuid, usize), oneshot::Sender<SpeechToTextResponse>>;
+
 #[derive(Clone, Debug)]
 pub struct VoiceResponseCollection {
-    inner: Arc<Mutex<HashMap<(Uuid, usize), oneshot::Sender<SpeechToTextResponse>>>>,
+    inner: Arc<Mutex<InnerVoiceResponseCollection>>,
 }
 
 impl VoiceResponseCollection {
@@ -161,5 +163,11 @@ impl VoiceResponseCollection {
         if let Some(sender) = self.inner.lock().unwrap().remove(lookup) {
             sender.send(voice_response).ok();
         }
+    }
+}
+
+impl Default for VoiceResponseCollection {
+    fn default() -> Self {
+        Self::new()
     }
 }

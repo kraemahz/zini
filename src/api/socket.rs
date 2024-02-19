@@ -191,7 +191,7 @@ pub fn routes(
         .expect("Could not get InstructChannel")
         .clone();
 
-    let ws = warp::path("ws")
+    warp::path("ws")
         .and(authenticate(idp, session.clone()))
         .and(warp::ws())
         .map(
@@ -209,6 +209,5 @@ pub fn routes(
             },
         )
         .untuple_one()
-        .and_then(store_auth_cookie);
-    return ws;
+        .and_then(store_auth_cookie)
 }

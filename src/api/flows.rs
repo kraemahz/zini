@@ -116,7 +116,7 @@ async fn create_flow_handler(
         &user,
         flow_name,
         description.unwrap_or_else(String::new),
-        &entry,
+        entry,
         graph,
         exit_refs,
     ) {

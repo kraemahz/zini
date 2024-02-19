@@ -192,6 +192,12 @@ impl PromptResponseCollection {
     }
 }
 
+impl Default for PromptResponseCollection {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "lowercase")]
 enum AuthRequestPayload {
@@ -227,9 +233,8 @@ async fn auth_request(
         None => return false,
     };
     for element in auth_response.split_ascii_whitespace() {
-        match element.to_ascii_lowercase().as_str() {
-            "accept" => return true,
-            _ => {}
+        if element.to_ascii_lowercase().as_str() == "accept" {
+            return true;
         }
     }
     false
@@ -351,7 +356,7 @@ async fn run_tool(
             }
             let mut conn = match db_pool.get() {
                 Ok(conn) => conn,
-                Err(_) => return ToolResult::Error(format!("Database access error")),
+                Err(_) => return ToolResult::Error("Database access error".to_string()),
             };
             let task = match update_task(&mut conn, auth_user.id(), task_id, update).await {
                 Ok(task) => task,

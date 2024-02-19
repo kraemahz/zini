@@ -57,7 +57,7 @@ impl Task {
             created: chrono::Utc::now().naive_utc(),
             title: title.to_owned(),
             description: description.to_owned(),
-            author_id: author.id.clone(),
+            author_id: author.id,
             assignee_id: None,
         };
 
@@ -197,7 +197,7 @@ impl Task {
             .filter(task_watchers::task_id.eq(&self.id))
             .select(users::all_columns)
             .load::<User>(conn)?;
-        Ok(users.into_iter().map(|user| user.into()).collect())
+        Ok(users)
     }
 
     pub fn query(
@@ -505,7 +505,7 @@ impl TaskFlow {
                     column: "current_node_id".to_string(),
                     constraint_name: "task_flow_current_node_id_exists".to_string(),
                 });
-                return Err(diesel::result::Error::DatabaseError(kind, msg));
+                Err(diesel::result::Error::DatabaseError(kind, msg))
             }
         }
     }
@@ -538,12 +538,12 @@ impl TryFrom<i32> for TaskLinkType {
     }
 }
 
-impl Into<i32> for TaskLinkType {
-    fn into(self) -> i32 {
-        match self {
-            Self::SubtaskOf => 0,
-            Self::DependsOn => 1,
-            Self::RelatedTo => 2,
+impl From<TaskLinkType> for i32 {
+    fn from(val: TaskLinkType) -> Self {
+        match val {
+            TaskLinkType::SubtaskOf => 0,
+            TaskLinkType::DependsOn => 1,
+            TaskLinkType::RelatedTo => 2,
         }
     }
 }

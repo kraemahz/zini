@@ -189,8 +189,8 @@ pub struct TaskStatePayload {
 impl TaskStatePayload {
     pub fn build(conn: &mut PgConnection, task: Task) -> QueryResult<Self> {
         let flows = task.flows(conn)?;
-        let tags = task.tags(conn).ok().unwrap_or_else(Vec::new);
-        let watchers = task.watchers(conn).ok().unwrap_or_else(Vec::new);
+        let tags = task.tags(conn).ok().unwrap_or_default();
+        let watchers = task.watchers(conn).ok().unwrap_or_default();
         let state = TaskFlow::get_active_node(conn, &flows)?;
         let valid_transitions = FlowConnection::edges(conn, state.id)?;
         let links_out = TaskLink::get_outgoing(conn, &task)?;
@@ -377,7 +377,7 @@ pub struct DenormalizedTaskDetails {
 impl DenormalizedTaskDetails {
     pub fn denormalize(conn: &mut PgConnection, task: &Task) -> QueryResult<Self> {
         let flows = task.flows(conn)?;
-        let tags = task.tags(conn).ok().unwrap_or_else(Vec::new);
+        let tags = task.tags(conn).ok().unwrap_or_default();
 
         let watchers: Vec<DenormalizedUser> = task
             .watchers(conn)?
@@ -387,13 +387,13 @@ impl DenormalizedTaskDetails {
         let state = TaskFlow::get_active_node(conn, &flows)?;
         let valid_transitions = FlowConnection::edges(conn, state.id)?;
 
-        let links_out: Vec<DenormalizedTaskLink> = TaskLink::get_outgoing(conn, &task)?
+        let links_out: Vec<DenormalizedTaskLink> = TaskLink::get_outgoing(conn, task)?
             .into_iter()
             .filter_map(|task_link| {
                 DenormalizedTaskLink::denormalize(conn, DirectionalLink::To(task_link)).ok()
             })
             .collect();
-        let links_in: Vec<DenormalizedTaskLink> = TaskLink::get_incoming(conn, &task)?
+        let links_in: Vec<DenormalizedTaskLink> = TaskLink::get_incoming(conn, task)?
             .into_iter()
             .filter_map(|task_link| {
                 DenormalizedTaskLink::denormalize(conn, DirectionalLink::From(task_link)).ok()
