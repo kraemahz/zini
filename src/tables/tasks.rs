@@ -650,7 +650,23 @@ mod test {
             Some("test_user"),
         )
         .expect("user");
-        let mut proj = Project::create(&mut conn, &user, "proj", "", None).expect("proj");
+
+        let entry_node = FlowNode::create(&mut conn, "OPEN").expect("open");
+        let exit_node = FlowNode::create(&mut conn, "CLOSED").expect("closed");
+        let exits = vec![&exit_node];
+        let graph = vec![(&entry_node, &exit_node)];
+
+        let flow = Flow::create(
+            &mut conn,
+            &user,
+            "Default".to_string(),
+            "This is the default flow".to_string(),
+            &entry_node,
+            graph,
+            exits,
+        ).expect("flow");
+
+        let mut proj = Project::create(&mut conn, &user, "proj", "", &flow).expect("proj");
         let task = Task::create(
             &mut conn,
             Uuid::new_v4(),

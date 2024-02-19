@@ -99,7 +99,7 @@ subseq_util::setup_table_crud!(
 mod test {
     use super::*;
     use crate::tables::test::MIGRATIONS;
-    use crate::tables::Flow;
+    use crate::tables::{Flow, FlowNode};
     use function_name::named;
     use subseq_util::tables::harness::{to_pg_db_name, DbHarness};
     use subseq_util::tables::UserTable;
@@ -111,7 +111,22 @@ mod test {
         let harness = DbHarness::new("localhost", "development", &db_name, Some(MIGRATIONS));
         let mut conn = harness.conn();
         let user = User::create(&mut conn, Uuid::new_v4(), "test@example.com", None).expect("user");
-        let flow = Flow::default_flow(&mut conn).expect("default flow");
+
+        let entry_node = FlowNode::create(&mut conn, "OPEN").expect("open");
+        let exit_node = FlowNode::create(&mut conn, "CLOSED").expect("closed");
+        let exits = vec![&exit_node];
+        let graph = vec![(&entry_node, &exit_node)];
+
+        let flow = Flow::create(
+            &mut conn,
+            &user,
+            "Default".to_string(),
+            "This is the default flow".to_string(),
+            &entry_node,
+            graph,
+            exits,
+        ).expect("flow");
+
         let proj =
             Project::create(&mut conn, &user, "test_proj", "This is a test", &flow).expect("proj");
         let proj2 = Project::get(&mut conn, proj.id).expect("proj2");
