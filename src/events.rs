@@ -1,6 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
 use futures::Future;
 use http::Uri;
@@ -10,6 +11,7 @@ use serde::Serialize;
 use subseq_util::router::Router;
 use subseq_util::tables::{DbPool, UserTable};
 use tokio::spawn;
+use tokio::time::sleep;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::api::prompts::{InitializePromptChannel, PromptRx, PromptTx};
@@ -51,6 +53,8 @@ const PROJECT_UPDATED_BEAM: &str = "urn:subseq.io:tasks:project:updated";
 
 const FLOW_CREATED_BEAM: &str = "urn:subseq.io:tasks:workflow:created";
 const FLOW_UPDATED_BEAM: &str = "urn:subseq.io:tasks:workflow:updated";
+
+const DEFAULT_PING_RATE: Duration = Duration::from_secs(50);
 
 async fn setup_user_beams(client: &mut AsyncClient) {
     client
@@ -360,8 +364,19 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
         setup_project_beams(&mut client).await;
         setup_flow_beams(&mut client).await;
 
+        let mut remaining_time = DEFAULT_PING_RATE;
+        let mut instant = Instant::now();
         loop {
+            remaining_time = remaining_time.checked_sub(instant.elapsed()).unwrap_or(Duration::ZERO);
+            let ping_timer = sleep(remaining_time);
             tokio::select!(
+                _ = ping_timer => {
+                    if client.ping().await.is_err() {
+                        break;
+                    }
+                    remaining_time = DEFAULT_PING_RATE;
+                    instant = Instant::now();
+                }
                 msg = voice_rx.recv() => {
                     if let Some((msg, tx)) = msg {
                         voice_requests.insert(msg.conversation_id, msg.count, tx);
