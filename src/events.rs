@@ -24,8 +24,13 @@ use crate::{
     tables::{Flow, Graph, Project, Task, User},
 };
 
-pub fn prism_url(host: &str, port: u16) -> String {
-    format!("ws://{}:{}", host, port)
+pub fn prism_url(host: &str, port: Option<u16>) -> String {
+    let port_str = if let Some(port) = port {
+        format!(":{}", port)
+    } else {
+        String::new()
+    };
+    format!("ws://{}{}", host, port_str)
 }
 
 const USER_CREATED_BEAM: &str = "urn:subseq.io:oidc:user:created";
