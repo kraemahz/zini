@@ -126,6 +126,8 @@ pub fn create_audio_timing_task(
                         Some(payload)
                     }
                 };
+            } else {
+                break;
             }
         }
         tracing::warn!("Speech to instructions exited");
