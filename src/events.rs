@@ -19,10 +19,11 @@ use crate::api::tasks::TaskRun;
 use crate::api::voice::{
     SpeechToText, SpeechToTextRequest, SpeechToTextResponse, VoiceResponseCollection,
 };
+use crate::interop::{JobRequest, JobResponse};
 use crate::{
     api::prompts::PromptResponseCollection,
     api::tasks::TaskStatePayload,
-    interop::{Job, JobResult},
+    interop::{DenormalizedJob, JobResult},
     tables::{Flow, Graph, Project, Task, User},
 };
 
@@ -35,22 +36,30 @@ pub fn prism_url(host: &str, port: Option<u16>) -> String {
     format!("ws://{}{}", host, port_str)
 }
 
+// Users
 const USER_CREATED_BEAM: &str = "urn:subseq.io:oidc:user:created";
 const USER_UPDATED_BEAM: &str = "urn:subseq.io:oidc:user:updated";
 
-const JOB_RESULT_BEAM: &str = "urn:subseq.io:builds:job:result";
-const JOB_CREATED_BEAM: &str = "urn:subseq.io:builds:k8s:job:created";
+// Builds from Sage
+const JOB_CREATED_BEAM: &str = "urn:subseq.io:builds:job:created";
+const JOB_PROGRESS_BEAM: &str = "urn:subseq.io:builds:job:progress";
+const JOB_REQUEST_BEAM: &str = "urn:subseq.io:builds:job:request";
+const JOB_RESPONSE_BEAM: &str = "urn:subseq.io:builds:job:response";
+// Tasks from Sage
+const TASK_RUN_BEAM: &str = "urn:subseq.io:tasks:task:run";
+const TASK_RESULT_BEAM: &str = "urn:subseq.io:tasks:task:result";
 
 // Task Broadcast
 const TASK_CREATED_BEAM: &str = "urn:subseq.io:tasks:task:created";
-const TASK_RUN_BEAM: &str = "urn:subseq.io:tasks:task:run";
 const TASK_UPDATED_BEAM: &str = "urn:subseq.io:tasks:task:updated";
 const TASK_ASSIGNEE_BEAM: &str = "urn:subseq.io:tasks:task:assignee:changed";
 const TASK_STATE_BEAM: &str = "urn:subseq.io:tasks:task:state:changed";
 
+// Projects
 const PROJECT_CREATED_BEAM: &str = "urn:subseq.io:tasts:project:created";
 const PROJECT_UPDATED_BEAM: &str = "urn:subseq.io:tasks:project:updated";
 
+// Flows
 const FLOW_CREATED_BEAM: &str = "urn:subseq.io:tasks:workflow:created";
 const FLOW_UPDATED_BEAM: &str = "urn:subseq.io:tasks:workflow:updated";
 
@@ -78,11 +87,24 @@ async fn setup_user_beams(client: &mut AsyncClient) {
 
 async fn setup_job_beams(client: &mut AsyncClient) {
     client
-        .subscribe(JOB_RESULT_BEAM, None)
+        .add_beam(JOB_RESPONSE_BEAM)
+        .await
+        .expect("Failed setting up client");
+
+    client
+        .subscribe(TASK_RESULT_BEAM, None)
         .await
         .expect("Failed subscribing");
     client
         .subscribe(JOB_CREATED_BEAM, None)
+        .await
+        .expect("Failed subscribing");
+    client
+        .subscribe(JOB_REQUEST_BEAM, None)
+        .await
+        .expect("Failed subscribing");
+    client
+        .subscribe(JOB_PROGRESS_BEAM, None)
         .await
         .expect("Failed subscribing");
 }
@@ -152,6 +174,12 @@ fn gen_prompt_beams() -> (String, String) {
 #[derive(Clone)]
 pub struct UserCreated(pub User);
 
+impl From<User> for UserCreated {
+    fn from(user: User) -> Self {
+        Self(user)
+    }
+}
+
 pub fn create_users_from_events(
     mut user_created_rx: broadcast::Receiver<UserCreated>,
     db_pool: Arc<DbPool>,
@@ -177,14 +205,75 @@ struct PromptTxWrapper {
 }
 
 struct WaveletHandler {
-    job_result_tx: broadcast::Sender<JobResult>,
-    job_created_tx: broadcast::Sender<Job>,
+    job_result_tx: mpsc::Sender<JobResult>,
+    job_created_tx: mpsc::Sender<DenormalizedJob>,
     user_created_tx: broadcast::Sender<UserCreated>,
+    job_request_tx: mpsc::Sender<JobRequest>,
     prompt_requests: PromptResponseCollection,
     prompt_beam: String,
     voice_requests: VoiceResponseCollection,
     voice_beam: String,
     wavelet: Wavelet,
+}
+
+macro_rules! process_photons {
+    ($beam:expr, $photons:expr, $result_type:ty, $tx:expr) => {
+        for photon in $photons {
+            let result: $result_type = match serde_json::from_slice(&photon.payload) {
+                Ok(ok) => ok,
+                Err(err) => {
+                    tracing::error!("Received invalid Photon on {}: {:?}", $beam, err);
+                    continue;
+                }
+            };
+            $tx.send(result.into()).ok();
+        }
+    };
+}
+
+macro_rules! process_photons_spawn {
+    ($beam:expr, $photons:expr, $result_type:ty, $tx:expr) => {
+        let payloads: Vec<_> = $photons.into_iter().map(|ph| ph.payload.clone()).collect();
+        let tx = $tx.clone();
+        spawn(async move {
+            for payload in payloads {
+                let result: $result_type = match serde_json::from_slice(&payload) {
+                    Ok(ok) => ok,
+                    Err(err) => {
+                        tracing::error!("Received invalid Photon on {}: {:?}", $beam, err);
+                        continue;
+                    }
+                };
+                tx.send(result.into()).await.ok();
+            }
+        });
+    };
+}
+
+macro_rules! emit_photon {
+    ($client:expr, $msg:expr, $beam:expr) => {
+        if let Ok(msg) = $msg {
+            let vec = serde_json::to_vec(&msg).unwrap();
+            if $client.emit($beam, vec).await.is_err() {
+                break;
+            }
+        }
+    };
+}
+
+macro_rules! process_dynamic_photons {
+    ($beam:expr, $photons:expr, $result_type:ty, $tx:expr, $deser_fn:path) => {
+        for photon in $photons {
+            let result: $result_type = match $deser_fn(&photon.payload) {
+                Ok(ok) => ok,
+                Err(err) => {
+                    tracing::error!("Received invalid Photon on {}: {:?}", $beam, err);
+                    continue;
+                }
+            };
+            $tx.send_response(result);
+        }
+    };
 }
 
 impl Future for WaveletHandler {
@@ -193,85 +282,31 @@ impl Future for WaveletHandler {
         let this = self.get_mut();
         let Wavelet { beam, photons } = &this.wavelet;
         match beam.as_str() {
-            JOB_RESULT_BEAM => {
-                for photon in photons {
-                    let result: JobResult = match serde_json::from_slice(&photon.payload) {
-                        Ok(ok) => ok,
-                        Err(err) => {
-                            tracing::error!(
-                                "Received invalid Photon on {}: {:?}",
-                                JOB_RESULT_BEAM,
-                                err
-                            );
-                            continue;
-                        }
-                    };
-                    this.job_result_tx.send(result).ok();
-                }
+            JOB_REQUEST_BEAM => {
+                process_photons_spawn!(JOB_REQUEST_BEAM, photons, JobRequest, this.job_request_tx);
+            }
+            TASK_RESULT_BEAM => {
+                process_photons_spawn!(TASK_RESULT_BEAM, photons, JobResult, this.job_result_tx);
             }
             JOB_CREATED_BEAM => {
-                for photon in photons {
-                    let result: Job = match serde_json::from_slice(&photon.payload) {
-                        Ok(ok) => ok,
-                        Err(err) => {
-                            tracing::error!(
-                                "Received invalid Photon on {}: {:?}",
-                                JOB_RESULT_BEAM,
-                                err
-                            );
-                            continue;
-                        }
-                    };
-                    this.job_created_tx.send(result).ok();
-                }
+                process_photons_spawn!(JOB_CREATED_BEAM, photons, DenormalizedJob, this.job_created_tx);
             }
             USER_CREATED_BEAM => {
-                for photon in photons {
-                    let result: User = match serde_json::from_slice(&photon.payload) {
-                        Ok(ok) => ok,
-                        Err(_) => {
-                            tracing::error!("Received invalid Photon on {}", JOB_RESULT_BEAM);
-                            continue;
-                        }
-                    };
-                    this.user_created_tx.send(UserCreated(result)).ok();
-                }
+                process_photons!(USER_CREATED_BEAM, photons, User, this.user_created_tx);
             }
             b => {
                 if b == this.voice_beam {
-                    for photon in photons {
-                        let result: SpeechToTextResponse =
-                            match serde_cbor::from_slice(&photon.payload) {
-                                Ok(ok) => ok,
-                                Err(err) => {
-                                    tracing::error!(
-                                        "Received invalid Photon on {}: {:?}",
-                                        JOB_RESULT_BEAM,
-                                        err
-                                    );
-                                    continue;
-                                }
-                            };
-                        this.voice_requests.send_response(result);
-                    }
+                    process_dynamic_photons!(b,
+                                             photons,
+                                             SpeechToTextResponse,
+                                             this.voice_requests,
+                                             serde_cbor::from_slice);
                 } else if b == this.prompt_beam {
-                    for photon in photons {
-                        let result: PromptRx = match serde_json::from_slice(&photon.payload) {
-                            Ok(ok) => ok,
-                            Err(err) => {
-                                let payload =
-                                    String::from_utf8(photon.payload.clone()).unwrap_or_default();
-                                tracing::error!(
-                                    "Received invalid Photon on {}: {:?}\n{}",
-                                    this.prompt_beam,
-                                    err,
-                                    payload
-                                );
-                                continue;
-                            }
-                        };
-                        this.prompt_requests.send_response(result);
-                    }
+                    process_dynamic_photons!(b,
+                                             photons,
+                                             PromptRx,
+                                             this.prompt_requests,
+                                             serde_json::from_slice);
                 } else {
                     tracing::error!("Received unhandled Beam: {}", b);
                 }
@@ -301,8 +336,10 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
     let handler_voice_requests = voice_requests.clone();
 
     // Jobs
-    let job_tx: broadcast::Sender<Job> = router.announce();
-    let job_result_tx: broadcast::Sender<JobResult> = router.announce();
+    let job_tx: mpsc::Sender<DenormalizedJob> = router.get_address().cloned().expect("job_tx");
+    let job_result_tx: mpsc::Sender<JobResult> = router.get_address().cloned().expect("job_result_tx");
+    let job_request_tx: mpsc::Sender<JobRequest> = router.get_address().cloned().expect("job_request_tx");
+    let mut job_response_rx: broadcast::Receiver<JobResponse> = router.subscribe();
     let user_created_tx: broadcast::Sender<UserCreated> = router.announce();
 
     // Prompts
@@ -323,6 +360,7 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
 
         let handle_tasks = move |wavelet: Wavelet| WaveletHandler {
             job_result_tx: job_result_tx.clone(),
+            job_request_tx: job_request_tx.clone(),
             job_created_tx: job_tx.clone(),
             user_created_tx: user_created_tx.clone(),
             prompt_requests: handler_requests.clone(),
@@ -377,6 +415,9 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
                     remaining_time = DEFAULT_PING_RATE;
                     instant = Instant::now();
                 }
+                msg = job_response_rx.recv() => {
+                    emit_photon!(client, msg, JOB_RESPONSE_BEAM);
+                }
                 msg = voice_rx.recv() => {
                     if let Some((msg, tx)) = msg {
                         voice_requests.insert(msg.conversation_id, msg.count, tx);
@@ -388,7 +429,7 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
                     }
                 }
                 msg = new_prompt_rx.recv() => {
-                    if let Some((stream_id, mut rx, tx)) = msg {
+                    if let Some(InitializePromptChannel(stream_id, mut rx, tx)) = msg {
                         prompt_requests.insert(stream_id, tx);
                         let msg_tx = prompt_request_tx.clone();
                         let prompt_response_beam = prompt_response_beam.clone();
@@ -409,28 +450,13 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
                     }
                 }
                 msg = user_rx.recv() => {
-                    if let Ok(msg) = msg {
-                        let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit(USER_CREATED_BEAM, vec).await.is_err() {
-                            break;
-                        }
-                    }
+                    emit_photon!(client, msg, USER_CREATED_BEAM);
                 }
                 msg = task_rx.recv() => {
-                    if let Ok(msg) = msg {
-                        let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit(TASK_CREATED_BEAM, vec).await.is_err() {
-                            break;
-                        }
-                    }
+                    emit_photon!(client, msg, TASK_CREATED_BEAM);
                 }
                 msg = task_update_rx.recv() => {
-                    if let Ok(msg) = msg {
-                        let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit(TASK_UPDATED_BEAM, vec).await.is_err() {
-                            break;
-                        }
-                    }
+                    emit_photon!(client, msg, TASK_UPDATED_BEAM);
                 }
                 msg = task_run_rx.recv() => {
                     if let Ok(msg) = msg {
@@ -442,28 +468,13 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
                     }
                 }
                 msg = project_rx.recv() => {
-                    if let Ok(msg) = msg {
-                        let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit(PROJECT_CREATED_BEAM, vec).await.is_err() {
-                            break;
-                        }
-                    }
+                    emit_photon!(client, msg, PROJECT_CREATED_BEAM);
                 }
                 msg = flow_rx.recv() => {
-                    if let Ok(msg) = msg {
-                        let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit(FLOW_CREATED_BEAM, vec).await.is_err() {
-                            break;
-                        }
-                    }
+                    emit_photon!(client, msg, FLOW_CREATED_BEAM);
                 }
                 msg = graph_rx.recv() => {
-                    if let Ok(msg) = msg {
-                        let vec = serde_json::to_vec(&msg).unwrap();
-                        if client.emit(FLOW_UPDATED_BEAM, vec).await.is_err() {
-                            break;
-                        }
-                    }
+                    emit_photon!(client, msg, FLOW_UPDATED_BEAM);
                 }
             );
         }

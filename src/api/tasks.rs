@@ -7,7 +7,7 @@ use diesel::{PgConnection, QueryResult};
 use serde::{Deserialize, Serialize};
 use subseq_util::api::sessions::store_auth_cookie;
 use subseq_util::oidc::IdentityProvider;
-use subseq_util::{api::*, tables::UserTable, Router};
+use subseq_util::{api::*, tables::{DbPool, UserTable}, Router};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -18,8 +18,7 @@ use super::prompts::{InitializePromptChannel, PromptResponseType, PromptRxPayloa
 use super::with_channel;
 use crate::api::users::DenormalizedUser;
 use crate::tables::{
-    DbPool, FlowConnection, FlowNode, Project, Task, TaskFlow, TaskLink, TaskLinkType, TaskUpdate,
-    User,
+    FlowConnection, FlowNode, Project, Task, TaskFlow, TaskLink, TaskLinkType, TaskUpdate, User,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -65,7 +64,7 @@ async fn title_from_description(
     let (response_tx, mut response_rx) = mpsc::unbounded_channel();
     let request = PromptTx::title_from_desc(description.to_string());
     if prompt_request_tx
-        .send((request.stream_id, request_rx, response_tx))
+        .send(InitializePromptChannel(request.stream_id, request_rx, response_tx))
         .await
         .is_err()
     {
@@ -105,29 +104,24 @@ async fn title_from_description(
 }
 
 pub async fn create_task(
-    db_pool: Arc<DbPool>,
+    conn: &mut PgConnection,
     user_id: Uuid,
     project_id: Uuid,
     title: String,
     description: String,
 ) -> Result<Task, Rejection> {
-    let mut conn = match db_pool.get() {
-        Ok(conn) => conn,
-        Err(_) => return Err(warp::reject::custom(DatabaseError {})),
-    };
-
-    let mut project = match Project::get(&mut conn, project_id) {
+    let mut project = match Project::get(conn, project_id) {
         Some(project) => project,
         None => return Err(warp::reject::custom(NotFoundError {})),
     };
 
-    let user = match User::get(&mut conn, user_id) {
+    let user = match User::get(conn, user_id) {
         Some(user) => user,
         None => return Err(warp::reject::custom(NotFoundError {})),
     };
 
     Task::create(
-        &mut conn,
+        conn,
         Uuid::new_v4(),
         &mut project,
         &title,
@@ -161,7 +155,11 @@ async fn create_task_handler(
             .await
             .ok_or_else(|| warp::reject::custom(InvalidConfigurationError {}))?
     };
-    let task = create_task(db_pool.clone(), auth.id(), project_id, title, description).await?;
+    let mut conn = match db_pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Err(warp::reject::custom(DatabaseError {})),
+    };
+    let task = create_task(&mut conn, auth.id(), project_id, title, description).await?;
     sender.send(task.clone()).ok();
 
     let mut conn = match db_pool.get() {
@@ -435,15 +433,11 @@ pub type QueryChannel = (QueryPayload, oneshot::Sender<Result<QueryReply, Reject
 
 pub async fn filter_tasks(
     auth: AuthenticatedUser,
-    db_pool: Arc<DbPool>,
+    conn: &mut PgConnection,
     payload: QueryPayload,
 ) -> Result<QueryReply, Rejection> {
-    let mut conn = match db_pool.get() {
-        Ok(conn) => conn,
-        Err(_) => return Err(warp::reject::custom(DatabaseError {})),
-    };
     let tasks = Task::query(
-        &mut conn,
+        conn,
         auth.id(),
         &payload.query,
         payload.page,
@@ -451,7 +445,7 @@ pub async fn filter_tasks(
     );
     let mut denorm_tasks = vec![];
     for task in tasks {
-        let denorm_task = DenormalizedTask::denormalize(&mut conn, &task)
+        let denorm_task = DenormalizedTask::denormalize(conn, &task)
             .map_err(|_| warp::reject::custom(DatabaseError {}))?;
         denorm_tasks.push(denorm_task);
     }
@@ -467,8 +461,12 @@ async fn filter_tasks_handler(
     session: SessionWithStore<MemoryStore>,
     db_pool: Arc<DbPool>,
 ) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
+    let mut conn = match db_pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Err(warp::reject::custom(DatabaseError {})),
+    };
     Ok((
-        warp::reply::json(&filter_tasks(auth, db_pool.clone(), payload).await?),
+        warp::reply::json(&filter_tasks(auth, &mut conn, payload).await?),
         session,
     ))
 }

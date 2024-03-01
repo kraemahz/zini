@@ -126,6 +126,57 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    awaiting_help (id) {
+        id -> Uuid,
+        job_id -> Uuid,
+        request -> Varchar,
+    }
+}
+
+diesel::table! {
+    help_resolution (help_id) {
+        help_id -> Uuid,
+        result -> Varchar,
+    }
+}
+
+diesel::table! {
+    help_resolution_actions (id) {
+        id -> Uuid,
+        help_id -> Uuid,
+        action_taken -> Varchar,
+    }
+}
+
+diesel::table! {
+    help_resolution_files (id) {
+        id -> Uuid,
+        action_id -> Uuid,
+        file_name -> Varchar,
+    }
+}
+
+diesel::table! {
+    job_results (job_id) {
+        job_id -> Uuid,
+        completion_time -> Timestamp,
+        succeeded -> Bool,
+        job_log -> Varchar,
+    }
+}
+
+diesel::table! {
+    jobs (id) {
+        id -> Uuid,
+        project_id -> Uuid,
+        task_id -> Uuid,
+        name -> Varchar,
+        created_id -> Uuid,
+        assignee_id -> Uuid,
+    }
+}
+
 pub mod auth {
     diesel::table! {
         auth.metadata (user_id) {
@@ -164,6 +215,7 @@ pub use auth::{metadata, portraits, user_id_accounts, users};
 
 diesel::joinable!(active_projects -> users (user_id));
 diesel::joinable!(active_projects -> projects (project_id));
+diesel::joinable!(awaiting_help -> jobs (job_id));
 diesel::joinable!(metadata -> users (user_id));
 diesel::joinable!(portraits -> users (user_id));
 diesel::joinable!(default_project_tags -> projects (project_id));
@@ -174,7 +226,15 @@ diesel::joinable!(flow_exits -> flow_nodes (node_id));
 diesel::joinable!(flow_exits -> flows (flow_id));
 diesel::joinable!(flows -> flow_nodes (entry_node_id));
 diesel::joinable!(flows -> users (owner_id));
+diesel::joinable!(help_resolution -> awaiting_help (help_id));
+diesel::joinable!(help_resolution_actions -> awaiting_help (help_id));
+diesel::joinable!(help_resolution_files -> help_resolution_actions (action_id));
+diesel::joinable!(job_results -> jobs (job_id));
+diesel::joinable!(jobs -> projects (project_id));
+diesel::joinable!(jobs -> tasks (task_id));
+diesel::joinable!(jobs -> users (assignee_id));
 diesel::joinable!(projects -> users (owner_id));
+diesel::joinable!(tasks -> users (author_id));
 diesel::joinable!(task_flows -> flow_nodes (current_node_id));
 diesel::joinable!(task_flows -> flows (flow_id));
 diesel::joinable!(task_flows -> tasks (task_id));
@@ -189,12 +249,18 @@ diesel::joinable!(user_id_accounts -> users (user_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     active_projects,
+    awaiting_help,
     default_project_tags,
     flow_assignments,
     flow_exits,
     flow_node_connections,
     flow_nodes,
     flows,
+    help_resolution,
+    help_resolution_actions,
+    help_resolution_files,
+    job_results,
+    jobs,
     link_types,
     projects,
     tags,

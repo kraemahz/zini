@@ -77,7 +77,7 @@ async fn client_websocket(
     let (audio_tx, audio_rx) = mpsc::channel(WEBSOCKET_BUFFER_SIZE);
 
     if instruct_config_tx
-        .send((auth_user, instruct_in_rx, instruct_out_tx))
+        .send(InstructChannel(auth_user, instruct_in_rx, instruct_out_tx))
         .await
         .is_err()
     {

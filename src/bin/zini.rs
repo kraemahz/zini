@@ -12,7 +12,7 @@ use subseq_util::{
 };
 use warp::{reject::Rejection, Filter};
 
-use zini::api::*;
+use zini::api::{*, prompts::PromptChannelHandle};
 use zini::events;
 use zini::tables::User;
 
@@ -69,9 +69,14 @@ async fn main() {
     // Server setup
     let session = init_session_store();
     let mut router = Router::new();
+    let prompt_channel = PromptChannelHandle::new();
+
+    jobs::handle_new_job(pool.clone(), &mut router);
+    jobs::handle_new_job_results(pool.clone(), &mut router);
+    jobs::handle_job_request(pool.clone(), &mut router, prompt_channel.clone());
 
     events::emit_events(&prism_url, &mut router, pool.clone());
-    prompts::instruction_channel_task(pool.clone(), &mut router);
+    prompts::instruction_channel_task(pool.clone(), &mut router, prompt_channel);
 
     let log_requests = warp::log::custom(|info| {
         tracing::info!(

@@ -1,4 +1,5 @@
 mod flows;
+mod jobs;
 mod projects;
 mod tasks;
 mod users;
@@ -7,6 +8,15 @@ pub use self::flows::{Flow, FlowAssignment, FlowConnection, FlowExit, FlowNode, 
 pub use self::projects::{ActiveProject, Project};
 pub use self::tasks::{Tag, Task, TaskFlow, TaskLink, TaskLinkType, TaskUpdate};
 pub use self::users::{User, UserIdAccount, UserMetadata, UserPortrait};
+pub use self::jobs::{
+    AwaitingHelp,
+    DenormalizedHelpAction,
+    HelpResolution,
+    HelpResolutionAction,
+    HelpResolutionFiles,
+    Job,
+    JobResult,
+};
 pub use subseq_util::tables::{DbPool, ValidationErrorMessage};
 
 #[cfg(test)]
