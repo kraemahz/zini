@@ -6,6 +6,9 @@ use diesel::prelude::*;
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::User;
+use subseq_util::tables::UserTable;
+
 #[derive(PartialEq, Queryable, Insertable, Clone, Debug, Serialize)]
 #[diesel(table_name = crate::schema::jobs)]
 pub struct Job {
@@ -54,9 +57,13 @@ impl Job {
 
         for (key, value) in query_dict {
             match key.as_str() {
-                "project_id" => {
-                    if let Ok(value) = Uuid::try_parse(value) {
-                        query = query.filter(project_id.eq(value));
+                "project_id" => if let Ok(value) = Uuid::try_parse(value) {
+                    query = query.filter(project_id.eq(value));
+                } else if value == "active" {
+                    if let Some(user) = User::get(conn, user_id) {
+                        if let Some(project) = user.get_active_project(conn) {
+                            query = query.filter(project_id.eq(project.id));
+                        }
                     }
                 }
                 "created_id" => if let Ok(value) = Uuid::try_parse(value) {
@@ -221,32 +228,32 @@ pub struct HelpResolutionAction {
     pub action_taken: String
 }
 
-impl HelpResolutionAction {
+impl DenormalizedHelpAction {
     pub fn create(conn: &mut PgConnection,
                   help: &AwaitingHelp,
                   action_taken: String,
-                  files_changed: Vec<String>) -> QueryResult<Self> {
+                  files_changed: Vec<String>) -> QueryResult<DenormalizedHelpAction> {
         use crate::schema::help_resolution_actions;
-        let help = Self {
+        let help = HelpResolutionAction {
             id: Uuid::new_v4(),
             help_id: help.id,
-            action_taken
+            action_taken: action_taken.clone()
         };
         diesel::insert_into(help_resolution_actions::table)
             .values(&help)
             .execute(conn)?;
 
-        for file_changed in files_changed {
-            HelpResolutionFiles::create(conn, &help, file_changed)?;
+        for file_changed in files_changed.iter() {
+            HelpResolutionFiles::create(conn, help.id, file_changed.clone())?;
         }
-        Ok(help)
+        Ok(DenormalizedHelpAction { help_id: help.id, action_taken, files_changed })
     }
 
     pub fn list(conn: &mut PgConnection, help_id: Uuid) -> QueryResult<Vec<DenormalizedHelpAction>> {
         use crate::schema::help_resolution_actions;
         let actions = help_resolution_actions::table
             .filter(help_resolution_actions::help_id.eq(help_id))
-            .load::<Self>(conn)?;
+            .load::<HelpResolutionAction>(conn)?;
 
         let mut denorm_list = vec![];
         for action in actions {
@@ -264,20 +271,26 @@ impl HelpResolutionAction {
     pub fn update(&mut self, conn: &mut PgConnection, action_taken: String, files_changed: Vec<String>) -> QueryResult<()> {
         use crate::schema::help_resolution_actions;
         self.action_taken = action_taken;
-        diesel::update(help_resolution_actions::table.find(&self.id))
+        diesel::update(help_resolution_actions::table.find(&self.help_id))
             .set(help_resolution_actions::action_taken.eq(&self.action_taken))
             .execute(conn)?;
-        HelpResolutionFiles::replace_files_for_action(conn, self, files_changed)?;
+        HelpResolutionFiles::replace_files_for_action(conn, self.help_id, files_changed)?;
         Ok(())
     }
 
-    pub fn get(conn: &mut PgConnection, id: Uuid) -> Option<Self> {
+    pub fn get(conn: &mut PgConnection, id: Uuid) -> Option<DenormalizedHelpAction> {
         use crate::schema::help_resolution_actions::dsl;
-        dsl::help_resolution_actions
+        let action = dsl::help_resolution_actions
             .find(id)
-            .get_result::<Self>(conn)
+            .get_result::<HelpResolutionAction>(conn)
             .optional()
-            .ok()?
+            .ok()??;
+        let files = HelpResolutionFiles::list(conn, action.id).ok()?;
+        Some(DenormalizedHelpAction {
+            help_id: action.id,
+            action_taken: action.action_taken,
+            files_changed: files
+        })
     }
 
     pub fn delete(&self, conn: &mut PgConnection) -> QueryResult<()> {
@@ -285,11 +298,11 @@ impl HelpResolutionAction {
         use crate::schema::help_resolution_files;
 
         conn.transaction::<_, diesel::result::Error, _>(|conn| {
-            diesel::delete(help_resolution_files::table.filter(help_resolution_files::action_id.eq(self.id)))
+            diesel::delete(help_resolution_files::table.filter(help_resolution_files::action_id.eq(self.help_id)))
                 .execute(conn)?;
 
             diesel::delete(help_resolution_actions::table)
-                .filter(help_resolution_actions::dsl::id.eq(self.id))
+                .filter(help_resolution_actions::dsl::id.eq(self.help_id))
                 .execute(conn)?;
             Ok(())
         })
@@ -306,12 +319,12 @@ pub struct HelpResolutionFiles {
 
 impl HelpResolutionFiles {
     pub fn create(conn: &mut PgConnection,
-                  action: &HelpResolutionAction,
+                  action_id: Uuid,
                   file_changed: String) -> QueryResult<Self> {
         use crate::schema::help_resolution_files;
         let help = Self {
             id: Uuid::new_v4(),
-            action_id: action.id,
+            action_id,
             file_name: file_changed
         };
         diesel::insert_into(help_resolution_files::table)
@@ -332,18 +345,18 @@ impl HelpResolutionFiles {
 
     fn replace_files_for_action(
         conn: &mut PgConnection,
-        help_action: &HelpResolutionAction,
+        action_id: Uuid,
         new_files: Vec<String>,
     ) -> QueryResult<()> {
         use crate::schema::help_resolution_files;
         conn.transaction::<_, diesel::result::Error, _>(|conn| {
             // Delete existing entries matching action_id
-            diesel::delete(help_resolution_files::table.filter(help_resolution_files::action_id.eq(help_action.id)))
+            diesel::delete(help_resolution_files::table.filter(help_resolution_files::action_id.eq(action_id)))
                 .execute(conn)?;
 
             // Insert new entries from Vec<String>
             for file_name in new_files {
-                HelpResolutionFiles::create(conn, &help_action, file_name)?;
+                HelpResolutionFiles::create(conn, action_id, file_name)?;
             }
             Ok(())
         })

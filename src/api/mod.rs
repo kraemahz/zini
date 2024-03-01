@@ -10,6 +10,8 @@ pub mod voice;
 use tokio::sync::mpsc;
 use warp::Filter;
 
+pub const PAGE_SIZE: u32 = 20;
+
 pub fn with_channel<M: Send + Sync>(
     channel: mpsc::Sender<M>,
 ) -> impl Filter<Extract = (mpsc::Sender<M>,), Error = std::convert::Infallible> + Clone {

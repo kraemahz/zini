@@ -13,7 +13,7 @@ use warp::{Filter, Rejection, Reply};
 use warp_sessions::{MemoryStore, SessionWithStore};
 
 use crate::interop::{JobResult, ActionTaken};
-use crate::tables::{HelpResolution, HelpResolutionAction, DenormalizedHelpAction};
+use crate::tables::{HelpResolution, DenormalizedHelpAction};
 use crate::{
     interop::{
         DenormalizedJob,
@@ -208,17 +208,52 @@ async fn filter_jobs_handler(
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError {})),
     };
+    let QueryPayload { page, page_size, query } = payload;
 
-    let result = Job::query(&mut conn, auth_user.id(), &payload.query, payload.page, payload.page_size)
+    let result = Job::query(&mut conn, auth_user.id(), &query, page, page_size)
         .map_err(|_| warp::reject::custom(DatabaseError{}))?;
 
     let jobs: Vec<_> = result.into_iter()
         .map(|(job, job_result)| {
             DenormalizedJobPartial {
-                job_id: job.id,
+                id: job.id,
                 project_id: job.project_id,
                 job_name: job.name,
-                succeded: job_result.map(|r| r.succeeded)
+                succeeded: job_result.map(|r| r.succeeded)
+            }
+        })
+        .collect();
+
+    Ok((warp::reply::json(&jobs), session))
+}
+
+async fn filter_logs_handler(
+    payload:  QueryPayload,
+    auth_user: AuthenticatedUser,
+    session: SessionWithStore<MemoryStore>,
+    db_pool: Arc<DbPool>,
+) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
+    let mut conn = match db_pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Err(warp::reject::custom(DatabaseError {})),
+    };
+
+    let QueryPayload { page, page_size, mut query } = payload;
+    query.insert("running".to_string(), "false".to_string());  // Guarantees all have results
+
+    let result = Job::query(&mut conn, auth_user.id(), &query, page, page_size)
+        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+
+    let jobs: Vec<_> = result.into_iter()
+        .map(|(job, job_result)| {
+            let job_result = job_result.expect("all jobs are completed");
+            DenormalizedJobLogs {
+                id: job.id,
+                project_id: job.project_id,
+                job_name: job.name,
+                completion_time: job_result.completion_time,
+                succeeded: job_result.succeeded,
+                job_log: job_result.job_log,
             }
         })
         .collect();
@@ -228,6 +263,7 @@ async fn filter_jobs_handler(
 
 #[derive(Serialize)]
 pub struct DenormalizedHelpRequest {
+    pub initial_request: String,
     pub help_resolution: Option<HelpResolution>,
     pub help_actions: Vec<DenormalizedHelpAction>,
 }
@@ -241,15 +277,25 @@ pub struct DenormalizedJobResult {
 
 #[derive(Serialize)]
 pub struct DenormalizedJobPartial {
-    pub job_id: Uuid,
+    pub id: Uuid,
     pub project_id: Uuid,
     pub job_name: String,
-    pub succeded: Option<bool>,
+    pub succeeded: Option<bool>,
+}
+
+#[derive(Serialize)]
+pub struct DenormalizedJobLogs {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub job_name: String,
+    pub completion_time: NaiveDateTime,
+    pub succeeded: bool,
+    pub job_log: String
 }
 
 #[derive(Serialize)]
 pub struct DenormalizedJobFull {
-    pub job_id: Uuid,
+    pub id: Uuid,
     pub project_id: Uuid,
     pub job_name: String,
     pub result: Option<DenormalizedJobResult>,
@@ -274,11 +320,12 @@ async fn get_job_handler(
     let help = AwaitingHelp::next_open_help(&mut conn, &job);
     let help_request = if let Some(help) = help.as_ref() {
         let resolution = HelpResolution::get(&mut conn, help.id);
-        let help_actions = match HelpResolutionAction::list(&mut conn, help.id) {
+        let help_actions = match DenormalizedHelpAction::list(&mut conn, help.id) {
             Ok(actions) => actions,
             Err(_) => vec![]
         };
         Some(DenormalizedHelpRequest {
+            initial_request: help.request.clone(),
             help_resolution: resolution,
             help_actions,
         })
@@ -294,7 +341,7 @@ async fn get_job_handler(
         });
 
     let denormalized_job = DenormalizedJobFull {
-        job_id: job.id,
+        id: job.id,
         project_id: job.project_id,
         job_name: job.name,
         result: job_result,
@@ -330,12 +377,12 @@ async fn create_help_step_handler(
         Some(help) => help,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
-    HelpResolutionAction::create(&mut conn,
-                                 &help,
-                                 help_step.action_taken,
-                                 help_step.files_changed)
+    let action = DenormalizedHelpAction::create(&mut conn,
+                                                &help,
+                                                help_step.action_taken,
+                                                help_step.files_changed)
         .map_err(|_| warp::reject::custom(DatabaseError{}))?;
-    Ok((warp::reply::reply(), session))
+    Ok((warp::reply::json(&action), session))
 }
 
 async fn update_help_step_handler(
@@ -350,13 +397,13 @@ async fn update_help_step_handler(
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError {})),
     };
-    let mut help_action = match HelpResolutionAction::get(&mut conn, step_id) {
+    let mut help_action = match DenormalizedHelpAction::get(&mut conn, step_id) {
         Some(help_action) => help_action,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
     help_action.update(&mut conn, help_step.action_taken, help_step.files_changed)
         .map_err(|_| warp::reject::custom(DatabaseError{}))?;
-    Ok((warp::reply::reply(), session))
+    Ok((warp::reply::json(&help_action), session))
 }
 
 async fn delete_help_step_handler(
@@ -371,7 +418,7 @@ async fn delete_help_step_handler(
         Err(_) => return Err(warp::reject::custom(DatabaseError {})),
     };
 
-    let help = match HelpResolutionAction::get(&mut conn, step_id) {
+    let help = match DenormalizedHelpAction::get(&mut conn, step_id) {
         Some(help) => help,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
@@ -413,7 +460,7 @@ async fn finish_help_handler(
             warp::reject::custom(ConflictError {})
         })?;
 
-    let actions = HelpResolutionAction::list(&mut conn, help.id)
+    let actions = DenormalizedHelpAction::list(&mut conn, help.id)
         .map_err(|_| warp::reject::custom(DatabaseError {}))?;
 
     let mut actions_taken = vec![];
@@ -454,6 +501,15 @@ pub fn routes(
         .untuple_one()
         .and_then(store_auth_cookie);
 
+    let filter_logs = warp::path!("log" / "query")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(authenticate(idp.clone(), session.clone()))
+        .and(with_db(pool.clone()))
+        .and_then(filter_logs_handler)
+        .untuple_one()
+        .and_then(store_auth_cookie);
+
     let get_job = warp::get()
         .and(warp::path::param())
         .and(authenticate(idp.clone(), session.clone()))
@@ -473,8 +529,7 @@ pub fn routes(
         .and_then(store_auth_cookie);
 
     let update_help_step = warp::path::param()
-        .and(warp::path("action"))
-        .and(warp::path::param())
+        .and(warp::path!("action" / Uuid))
         .and(warp::put())
         .and(warp::body::json())
         .and(authenticate(idp.clone(), session.clone()))
@@ -484,8 +539,7 @@ pub fn routes(
         .and_then(store_auth_cookie);
 
     let delete_help_step = warp::path::param()
-        .and(warp::path("action"))
-        .and(warp::path::param())
+        .and(warp::path!("action" / Uuid))
         .and(warp::delete())
         .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
@@ -506,6 +560,7 @@ pub fn routes(
 
     warp::path("job").and(
         filter_jobs
+            .or(filter_logs)
             .or(get_job)
             .or(create_help_step)
             .or(update_help_step)

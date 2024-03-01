@@ -14,6 +14,7 @@ use warp::{Filter, Rejection, Reply};
 use warp_sessions::{MemoryStore, SessionWithStore};
 
 use crate::tables::*;
+use super::PAGE_SIZE;
 
 #[derive(Deserialize, Debug, Clone, Serialize)]
 pub struct FlowNodePayload {
@@ -162,8 +163,6 @@ async fn get_flow_graph_handler(
     Ok((reply, session))
 }
 
-const NUM_FLOWS_PER_PAGE: u32 = 10;
-
 async fn list_flows_handler(
     page: u32,
     _auth: AuthenticatedUser,
@@ -174,7 +173,7 @@ async fn list_flows_handler(
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError {})),
     };
-    let flows = Flow::list(&mut conn, page, NUM_FLOWS_PER_PAGE);
+    let flows = Flow::list(&mut conn, page, PAGE_SIZE);
     Ok((warp::reply::json(&flows), session))
 }
 

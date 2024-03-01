@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
-use crate::tables::{User, UserIdAccount, UserMetadata, UserPortrait};
 use bytes::Buf;
 use chrono::NaiveDateTime;
 use diesel::{PgConnection, QueryResult};
 use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
-use subseq_util::api::sessions::store_auth_cookie;
 use subseq_util::api::InvalidConfigurationError;
+use subseq_util::api::sessions::store_auth_cookie;
 use subseq_util::{
     api::{authenticate, with_db, AuthenticatedUser, DatabaseError},
     oidc::IdentityProvider,
@@ -17,6 +16,9 @@ use uuid::Uuid;
 use warp::multipart::FormData;
 use warp::{http::Response, reject::Rejection, reply::Reply, Filter};
 use warp_sessions::{MemoryStore, SessionWithStore};
+
+use crate::tables::{User, UserIdAccount, UserMetadata, UserPortrait};
+use super::PAGE_SIZE;
 
 #[derive(Deserialize, Serialize)]
 pub struct StoredUserMeta {
@@ -80,8 +82,6 @@ async fn get_image(
     ))
 }
 
-const USER_PAGE_SIZE: u32 = 20;
-
 pub async fn list_users_handler(
     page: u32,
     _auth_user: AuthenticatedUser,
@@ -92,7 +92,7 @@ pub async fn list_users_handler(
         Ok(conn) => conn,
         Err(_) => return Err(warp::reject::custom(DatabaseError {})),
     };
-    let users = User::list(&mut conn, page, USER_PAGE_SIZE);
+    let users = User::list(&mut conn, page, PAGE_SIZE);
     let mut denorm_users = Vec::new();
     for user in users {
         let denorm_user = DenormalizedUser::denormalize(&mut conn, user)

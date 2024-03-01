@@ -10,6 +10,7 @@ use uuid::Uuid;
 use warp::{Filter, Rejection, Reply};
 use warp_sessions::{MemoryStore, SessionWithStore};
 
+use super::PAGE_SIZE;
 use crate::tables::{DbPool, Flow, Project, User};
 
 #[derive(Deserialize)]
@@ -61,8 +62,6 @@ pub async fn create_project_handler(
     dict.insert("project", project.id.to_string());
     Ok((warp::reply::json(&dict), session))
 }
-
-const PAGE_SIZE: u32 = 10;
 
 pub async fn list_projects_handler(
     page_number: u32,
