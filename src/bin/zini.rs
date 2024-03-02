@@ -112,6 +112,7 @@ async fn main() {
             pool.clone(),
             &mut router,
         ))
+        .or(jobs::routes(idp.clone(), session.clone(), pool.clone(), &mut router))
         .or(flows::routes(
             idp.clone(),
             session.clone(),
