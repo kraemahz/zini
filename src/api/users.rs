@@ -22,7 +22,7 @@ use super::PAGE_SIZE;
 
 #[derive(Deserialize, Serialize)]
 pub struct StoredUserMeta {
-    job_title: String,
+    pub job_title: String,
 }
 
 #[derive(Serialize, Debug, Clone)]

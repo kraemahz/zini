@@ -6,6 +6,7 @@ use prism_client::Client;
 use subseq_util::tables::UserTable;
 use uuid::Uuid;
 
+use zini::api::users::StoredUserMeta;
 use zini::events::{prism_url, USER_CREATED_BEAM, PROJECT_CREATED_BEAM};
 use zini::tables::*;
 
@@ -26,6 +27,7 @@ enum Commands {
     User {
         user_id: Uuid,
         user_email: String,
+        job_title: String
     },
     Project {
         user_id: Uuid,
@@ -56,8 +58,8 @@ fn main() -> QueryResult<()> {
         Commands::Init => {
             seed_init_data(&mut conn)?;
         }
-        Commands::User{user_id, user_email} => {
-            let user = seed_user_data(&mut conn, user_id, user_email)?;
+        Commands::User{user_id, user_email, job_title} => {
+            let user = seed_user_data(&mut conn, user_id, user_email, job_title)?;
             println!("Created User: {}", serde_json::to_string(&user).unwrap());
             if let Some(mut prism) = prism {
                 let vec = serde_json::to_vec(&user).unwrap();
@@ -94,19 +96,22 @@ fn seed_init_data(conn: &mut PgConnection) -> QueryResult<()> {
     )?;
 
     println!("Created Flow: {}", serde_json::to_string(&flow).unwrap());
-    println!(
-        "Entry Node: {}",
-        serde_json::to_string(&entry_node).unwrap()
-    );
+    println!("Entry Node: {}", serde_json::to_string(&entry_node).unwrap());
     println!("Exit Node: {}", serde_json::to_string(&exit_node).unwrap());
     Ok(())
 }
 
-fn seed_user_data(conn: &mut PgConnection, user_id: Uuid, user_email: String) -> QueryResult<User> {
+fn seed_user_data(conn: &mut PgConnection,
+                  user_id: Uuid,
+                  user_email: String,
+                  job_title: String) -> QueryResult<User> {
     let user = match User::get(conn, user_id) {
         Some(user) => user,
         None => User::create(conn, user_id, &user_email, None)?,
     };
+    let data = StoredUserMeta{job_title};
+    UserMetadata::create(conn, user_id, serde_json::to_value(&data).expect("serde"))?;
+
     Ok(user)
 }
 
