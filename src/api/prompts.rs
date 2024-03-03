@@ -7,13 +7,13 @@ use serde_json::Value;
 use subseq_util::api::AuthenticatedUser;
 use subseq_util::tables::{DbPool, UserTable};
 use subseq_util::Router;
-use tokio::{sync::mpsc, select, task::spawn};
+use tokio::{sync::{broadcast, mpsc}, select, task::spawn};
 use uuid::Uuid;
 
 use super::tasks::{create_task, filter_tasks, update_task, QueryPayload};
 use super::users::DenormalizedUser;
 use crate::interop::JobRequestType;
-use crate::tables::{ActiveProject, Flow, Project, TaskLinkType, TaskUpdate, User};
+use crate::tables::{ActiveProject, Flow, Project, Task, TaskLinkType, TaskUpdate, User};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -260,6 +260,8 @@ async fn run_tool(
     project_id: Uuid,
     check_auth: &mut bool,
     tool: Tool,
+    project_tx: &broadcast::Sender<Project>,
+    task_tx: &broadcast::Sender<Task>,
 ) -> ToolResult {
     match tool {
         Tool::RunTask { task_id: _ } => {
@@ -320,6 +322,7 @@ async fn run_tool(
                 Ok(task) => task,
                 Err(err) => return ToolResult::Error(format!("Database error: {:?}", err)),
             };
+
             if let Some(subtask_of) = subtask_of {
                 if let Ok(uuid) = Uuid::parse_str(&subtask_of) {
                     task.add_link(conn, uuid, TaskLinkType::SubtaskOf).ok();
@@ -346,6 +349,7 @@ async fn run_tool(
                     .expect("is valid");
                 task.add_tag(conn, &component).ok();
             }
+            task_tx.send(task.clone()).ok();
             ToolResult::CreateTask(TaskSummary {
                 task_id: task.id,
                 title: task.title,
@@ -391,6 +395,7 @@ async fn run_tool(
 
             let project = match Project::create(
                 conn,
+                Uuid::new_v4(),
                 &user,
                 &title.to_ascii_uppercase(),
                 &description,
@@ -402,6 +407,7 @@ async fn run_tool(
             if project.set_active_project(conn, user.id).is_err() {
                 return ToolResult::Error("Could not set the active project".to_string());
             }
+            project_tx.send(project.clone()).ok();
             *check_auth = false; // When the project is set to a new one we can ignore auth for
                                  // the rest of the project.
             ToolResult::BeginProject {
@@ -446,6 +452,8 @@ async fn instruction_channel_message(response: PromptRxPayload,
                                      string_rx: &mut mpsc::Receiver<String>,
                                      prompt_tx: &mpsc::Sender<PromptTx>,
                                      chat_tx: &mpsc::Sender<ChatCompletion>,
+                                     project_tx: &broadcast::Sender<Project>,
+                                     task_tx: &broadcast::Sender<Task>,
                                      stream_id: Uuid,
                                      auth_user: AuthenticatedUser,
                                      project_id: Uuid,
@@ -460,6 +468,8 @@ async fn instruction_channel_message(response: PromptRxPayload,
                 project_id,
                 check_auth,
                 tool,
+                project_tx,
+                task_tx,
             )
             .await;
             let response = PromptTx::tool_result(stream_id, tool_response);
@@ -527,6 +537,8 @@ async fn new_instruction_channel(
     auth_user: AuthenticatedUser,
     mut string_rx: mpsc::Receiver<String>,
     chat_tx: mpsc::Sender<ChatCompletion>,
+    project_tx: broadcast::Sender<Project>,
+    task_tx: broadcast::Sender<Task>,
     prompt_channel: PromptChannelHandle,
     initialize_prompt_tx: mpsc::Sender<InitializePromptChannel>,
 ) -> Option<()> {
@@ -549,6 +561,8 @@ async fn new_instruction_channel(
                                                 &mut string_rx,
                                                 &prompt_tx,
                                                 &chat_tx,
+                                                &project_tx,
+                                                &task_tx,
                                                 Uuid::nil(),
                                                 auth_user,
                                                 project_id,
@@ -588,6 +602,8 @@ async fn new_instruction_channel(
                                            &mut string_rx,
                                            &prompt_tx,
                                            &chat_tx,
+                                           &project_tx,
+                                           &task_tx,
                                            stream_id,
                                            auth_user,
                                            project_id,
@@ -608,12 +624,17 @@ pub fn instruction_channel_task(db_pool: Arc<DbPool>, router: &mut Router, promp
     let mut instruction_config_rx: mpsc::Receiver<InstructChannel> = router.create_channel();
     let prompt_request_tx: mpsc::Sender<InitializePromptChannel> =
         router.get_address().expect("Could't get address").clone();
+    let project_tx = router.announce();
+    let task_tx = router.announce();
+
     spawn(async move {
         while let Some(InstructChannel(auth_user, rx, tx)) = instruction_config_rx.recv().await {
             spawn(new_instruction_channel(db_pool.clone(),
                                           auth_user,
                                           rx,
                                           tx,
+                                          project_tx.clone(),
+                                          task_tx.clone(),
                                           prompt_channel.clone(),
                                           prompt_request_tx.clone(),
             ));

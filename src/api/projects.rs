@@ -49,6 +49,7 @@ pub async fn create_project_handler(
 
     let project = match Project::create(
         &mut conn,
+        Uuid::new_v4(),
         &user,
         &name.to_ascii_uppercase(),
         &description.unwrap_or_else(String::new),

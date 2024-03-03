@@ -33,13 +33,14 @@ impl PartialEq for Project {
 impl Project {
     pub fn create(
         conn: &mut PgConnection,
+        id: Uuid,
         author: &User,
         name: &str,
         description: &str,
         flow: &Flow,
     ) -> QueryResult<Self> {
         let project = Self {
-            id: Uuid::new_v4(),
+            id,
             name: name.to_ascii_uppercase(),
             owner_id: author.id,
             created: chrono::Utc::now().naive_utc(),

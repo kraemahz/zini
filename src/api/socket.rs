@@ -30,6 +30,7 @@ pub enum FrontEndMessage {
     InstructMessage(ChatCompletion),
     InstructClear,
     SetProject(String),
+    Ping,
 }
 
 impl Serialize for FrontEndMessage {
@@ -38,6 +39,9 @@ impl Serialize for FrontEndMessage {
         S: serde::Serializer,
     {
         let state = match self {
+            FrontEndMessage::Ping => {
+                unreachable!();
+            }
             FrontEndMessage::InstructClear => {
                 let mut state = serializer.serialize_struct("FrontEndMessage", 1)?;
                 state.serialize_field("channel", "INSTRUCT-CLEAR")?;
@@ -88,9 +92,10 @@ async fn client_websocket(
     let (audio_text_tx, mut audio_text_rx) = mpsc::channel(WEBSOCKET_BUFFER_SIZE);
     create_audio_timing_task(audio_text_tx, audio_rx, audio_event);
 
+    let output_instruct_tx = output_tx.clone();
     spawn(async move {
         while let Some(chat) = instruct_out_rx.recv().await {
-            if output_tx
+            if output_instruct_tx
                 .send(FrontEndMessage::InstructMessage(chat))
                 .await
                 .is_err()
@@ -113,8 +118,12 @@ async fn client_websocket(
 
     let write_handler = spawn(async move {
         while let Some(message) = output_rx.recv().await {
-            let serialized = serde_json::to_string(&message).unwrap();
-            write.send(Message::text(serialized)).await.ok();
+            if let FrontEndMessage::Ping = message {
+                write.send(Message::pong("".as_bytes())).await.ok();
+            } else {
+                let serialized = serde_json::to_string(&message).unwrap();
+                write.send(Message::text(serialized)).await.ok();
+            }
         }
         tracing::info!("{} write handler exited", user_id);
     })
@@ -156,10 +165,13 @@ async fn client_websocket(
                     msg_counter += 1;
                 } else if message.is_close() {
                     break;
+                } else if message.is_ping() {
+                    output_tx.send(FrontEndMessage::Ping).await.ok();
                 } else {
                     tracing::warn!("Unexpected ws message from {}", user_id);
                 }
             } else {
+                tracing::warn!("{} read handler errored", user_id);
                 break;
             }
         }

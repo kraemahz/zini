@@ -18,7 +18,16 @@ use super::prompts::{InitializePromptChannel, PromptResponseType, PromptRxPayloa
 use super::with_channel;
 use crate::api::users::DenormalizedUser;
 use crate::tables::{
-    FlowConnection, FlowNode, Project, Task, TaskFlow, TaskLink, TaskLinkType, TaskUpdate, User,
+    ActiveProject,
+    FlowConnection,
+    FlowNode,
+    Project,
+    Task,
+    TaskFlow,
+    TaskLink,
+    TaskLinkType,
+    TaskUpdate,
+    User,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -411,13 +420,20 @@ impl DenormalizedTaskDetails {
 
 #[derive(Serialize, Debug, Clone)]
 pub struct DenormalizedTaskState {
+    pub submitted_by: DenormalizedUser,
+    pub active_project: Uuid,
     pub task: DenormalizedTask,
     pub details: DenormalizedTaskDetails,
 }
 
 impl DenormalizedTaskState {
-    pub fn denormalize(conn: &mut PgConnection, task: &Task) -> QueryResult<Self> {
+    pub fn denormalize(conn: &mut PgConnection,
+                       submitted_by: User,
+                       active_project: Uuid,
+                       task: &Task) -> QueryResult<Self> {
         Ok(Self {
+            submitted_by: DenormalizedUser::denormalize(conn, submitted_by)?,
+            active_project,
             task: DenormalizedTask::denormalize(conn, task)?,
             details: DenormalizedTaskDetails::denormalize(conn, task)?,
         })
@@ -478,7 +494,7 @@ pub struct TaskRun {
 
 async fn run_task_handler(
     task_id: Uuid,
-    _auth: AuthenticatedUser,
+    auth: AuthenticatedUser,
     session: SessionWithStore<MemoryStore>,
     db_pool: Arc<DbPool>,
     task_run_tx: broadcast::Sender<TaskRun>,
@@ -496,7 +512,14 @@ async fn run_task_handler(
     if task.assignee_id.is_none() {
         return Err(warp::reject::custom(InvalidConfigurationError {}));
     }
-    let state = DenormalizedTaskState::denormalize(&mut conn, &task)
+    let submitted_user = User::get(&mut conn, auth.id())
+        .ok_or_else(|| warp::reject::custom(NotFoundError {}))?;
+    let active_project = ActiveProject::get(&mut conn, submitted_user.id)
+        .ok_or_else(|| warp::reject::custom(NotFoundError {}))?;
+    let state = DenormalizedTaskState::denormalize(&mut conn,
+                                                   submitted_user,
+                                                   active_project.project_id,
+                                                   &task)
         .map_err(|_| warp::reject::custom(DatabaseError {}))?;
 
     let run = TaskRun { state };

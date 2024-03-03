@@ -62,7 +62,7 @@ pub fn handle_new_job(db_pool: Arc<DbPool>, router: &mut Router) {
                 }
             };
 
-            Job::create(
+            match Job::create(
                 &mut conn,
                 id,
                 project_id,
@@ -70,8 +70,12 @@ pub fn handle_new_job(db_pool: Arc<DbPool>, router: &mut Router) {
                 name,
                 job_owners.created_id,
                 job_owners.assignee_id,
-            ).ok();
+            ) {
+                Ok(job) => tracing::info!("Job created {}", job.id),
+                Err(err) => tracing::info!("Failed Job::create: {:?}", err),
+            };
         }
+        tracing::warn!("handle_new_job exited");
     });
 }
 
@@ -108,12 +112,16 @@ pub fn handle_new_job_results(db_pool: Arc<DbPool>, router: &mut Router) {
             }
 
             // Insert this result with that job
-            JobResultTable::create(&mut conn,
+            match JobResultTable::create(&mut conn,
                                    &job,
                                    completion_time,
                                    succeeded,
-                                   job_log).ok();
+                                   job_log) {
+                Ok(job) => tracing::info!("JobResult created {}", job.job_id),
+                Err(err) => tracing::info!("Failed JobResult::create: {:?}", err),
+            }
         }
+        tracing::warn!("handle_new_job_results exited");
     });
 }
 
@@ -188,6 +196,7 @@ pub fn handle_job_request(db_pool: Arc<DbPool>, router: &mut Router, prompt_chan
                 continue;
             }
         }
+        tracing::warn!("handle_job_requests exited");
     });
 }
 

@@ -1,17 +1,44 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use diesel::prelude::*;
 use diesel::result::QueryResult;
+use http::Uri;
+use prism_client::Client;
 use subseq_util::tables::UserTable;
 use uuid::Uuid;
+
+use zini::events::{prism_url, USER_CREATED_BEAM, PROJECT_CREATED_BEAM};
 use zini::tables::*;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
-    #[arg(long)]
+    #[arg(short = 'd', long)]
     database: String,
-    base_user_id: Uuid,
-    base_user_email: String,
+    #[arg(short = 'p', long)]
+    prism: Option<String>,
+    #[command(subcommand)]
+    cmd: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    Init,
+    User {
+        user_id: Uuid,
+        user_email: String,
+    },
+    Project {
+        user_id: Uuid,
+        project_id: Uuid,
+        project_name: String,
+        project_description: String
+    },
+}
+
+fn prism_client(addr: String) -> Client {
+    let url = prism_url(&addr, None);
+    let uri = url.parse::<Uri>().expect("is valid uri");
+    Client::connect(uri, move |_| Ok(()))
 }
 
 fn main() -> QueryResult<()> {
@@ -19,15 +46,38 @@ fn main() -> QueryResult<()> {
     let mut conn = PgConnection::establish(&args.database)
         .unwrap_or_else(|_| panic!("Failed to connect to database: {}", args.database));
 
-    seed_data(&mut conn, args.base_user_id, args.base_user_email)
-}
-
-fn seed_data(conn: &mut PgConnection, user_id: Uuid, user_email: String) -> QueryResult<()> {
-    let user = match User::get(conn, user_id) {
-        Some(user) => user,
-        None => User::create(conn, user_id, &user_email, None)?,
+    let prism = if let Some(prism_addr) = args.prism {
+        Some(prism_client(prism_addr))
+    } else {
+        None
     };
 
+    match args.cmd {
+        Commands::Init => {
+            seed_init_data(&mut conn)?;
+        }
+        Commands::User{user_id, user_email} => {
+            let user = seed_user_data(&mut conn, user_id, user_email)?;
+            println!("Created User: {}", serde_json::to_string(&user).unwrap());
+            if let Some(mut prism) = prism {
+                let vec = serde_json::to_vec(&user).unwrap();
+                prism.emit(USER_CREATED_BEAM, vec).expect("prism user");
+            }
+        }
+        Commands::Project { user_id, project_id, project_name, project_description } => {
+            let project = seed_project_data(&mut conn, user_id, project_id, project_name, project_description)?;
+            println!("Created Project: {}", serde_json::to_string(&project).unwrap());
+            if let Some(mut prism) = prism {
+                let vec = serde_json::to_vec(&project).unwrap();
+                prism.emit(PROJECT_CREATED_BEAM, vec).expect("prism project");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn seed_init_data(conn: &mut PgConnection) -> QueryResult<()> {
+    let system_user = User::create(conn, Uuid::nil(), "support@subseq.io", None)?;
     let entry_node = FlowNode::create(conn, "OPEN")?;
     let exit_node = FlowNode::create(conn, "CLOSED")?;
     let exits = vec![&exit_node];
@@ -35,7 +85,7 @@ fn seed_data(conn: &mut PgConnection, user_id: Uuid, user_email: String) -> Quer
 
     let flow = Flow::create(
         conn,
-        &user,
+        &system_user,
         "Default".to_string(),
         "This is the default flow".to_string(),
         &entry_node,
@@ -43,13 +93,36 @@ fn seed_data(conn: &mut PgConnection, user_id: Uuid, user_email: String) -> Quer
         exits,
     )?;
 
-    println!("Created User: {}", serde_json::to_string(&user).unwrap());
     println!("Created Flow: {}", serde_json::to_string(&flow).unwrap());
     println!(
         "Entry Node: {}",
         serde_json::to_string(&entry_node).unwrap()
     );
     println!("Exit Node: {}", serde_json::to_string(&exit_node).unwrap());
-
     Ok(())
+}
+
+fn seed_user_data(conn: &mut PgConnection, user_id: Uuid, user_email: String) -> QueryResult<User> {
+    let user = match User::get(conn, user_id) {
+        Some(user) => user,
+        None => User::create(conn, user_id, &user_email, None)?,
+    };
+    Ok(user)
+}
+
+fn seed_project_data(conn: &mut PgConnection,
+                     user_id: Uuid,
+                     project_id: Uuid,
+                     project_name: String,
+                     project_description: String) -> QueryResult<Project> {
+    let user =  User::get(conn, user_id).expect("is valid user");
+    let default_flow = Flow::default_flow(conn).expect("default flow exists");
+    Project::create(
+        conn,
+        project_id,
+        &user,
+        &project_name,
+        &project_description,
+        &default_flow
+    )
 }

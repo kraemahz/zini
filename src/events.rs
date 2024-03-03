@@ -37,7 +37,7 @@ pub fn prism_url(host: &str, port: Option<u16>) -> String {
 }
 
 // Users
-const USER_CREATED_BEAM: &str = "urn:subseq.io:oidc:user:created";
+pub const USER_CREATED_BEAM: &str = "urn:subseq.io:oidc:user:created";
 const USER_UPDATED_BEAM: &str = "urn:subseq.io:oidc:user:updated";
 
 // Builds from Sage
@@ -56,7 +56,7 @@ const TASK_ASSIGNEE_BEAM: &str = "urn:subseq.io:tasks:task:assignee:changed";
 const TASK_STATE_BEAM: &str = "urn:subseq.io:tasks:task:state:changed";
 
 // Projects
-const PROJECT_CREATED_BEAM: &str = "urn:subseq.io:tasts:project:created";
+pub const PROJECT_CREATED_BEAM: &str = "urn:subseq.io:tasts:project:created";
 const PROJECT_UPDATED_BEAM: &str = "urn:subseq.io:tasks:project:updated";
 
 // Flows
@@ -233,6 +233,7 @@ macro_rules! process_photons {
 
 macro_rules! process_photons_spawn {
     ($beam:expr, $photons:expr, $result_type:ty, $tx:expr) => {
+        tracing::info!("Received {}", $beam);
         let payloads: Vec<_> = $photons.into_iter().map(|ph| ph.payload.clone()).collect();
         let tx = $tx.clone();
         spawn(async move {
@@ -253,6 +254,7 @@ macro_rules! process_photons_spawn {
 macro_rules! emit_photon {
     ($client:expr, $msg:expr, $beam:expr) => {
         if let Ok(msg) = $msg {
+            tracing::info!("Emit {}", $beam);
             let vec = serde_json::to_vec(&msg).unwrap();
             if $client.emit($beam, vec).await.is_err() {
                 break;
