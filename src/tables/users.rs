@@ -10,6 +10,20 @@ subseq_util::create_user_base!();
 subseq_util::setup_table_crud!(UserMetadata, crate::schema::auth::metadata::dsl::metadata);
 subseq_util::setup_table_crud!(UserPortrait, crate::schema::auth::portraits::dsl::portraits);
 
+impl UserIdAccount {
+    pub fn create(conn: &mut PgConnection, user_id: Uuid, username: String, account_type: Option<String>) -> QueryResult<Self> {
+        let id = Self {
+            user_id,
+            username,
+            account_type
+        };
+        diesel::insert_into(crate::schema::auth::user_id_accounts::table)
+            .values(&id)
+            .execute(conn)?;
+        Ok(id)
+    }
+}
+
 impl UserMetadata {
     pub fn create(conn: &mut PgConnection, user_id: Uuid, data: serde_json::Value) -> QueryResult<Self> {
         let meta = Self {

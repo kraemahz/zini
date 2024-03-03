@@ -27,6 +27,7 @@ enum Commands {
     User {
         user_id: Uuid,
         user_email: String,
+        username: String,
         job_title: String
     },
     Project {
@@ -58,8 +59,8 @@ fn main() -> QueryResult<()> {
         Commands::Init => {
             seed_init_data(&mut conn)?;
         }
-        Commands::User{user_id, user_email, job_title} => {
-            let user = seed_user_data(&mut conn, user_id, user_email, job_title)?;
+        Commands::User{user_id, user_email, username, job_title} => {
+            let user = seed_user_data(&mut conn, user_id, user_email, username, job_title)?;
             println!("Created User: {}", serde_json::to_string(&user).unwrap());
             if let Some(mut prism) = prism {
                 let vec = serde_json::to_vec(&user).unwrap();
@@ -79,7 +80,12 @@ fn main() -> QueryResult<()> {
 }
 
 fn seed_init_data(conn: &mut PgConnection) -> QueryResult<()> {
-    let system_user = User::create(conn, Uuid::nil(), "support@subseq.io", None)?;
+    let system_user = seed_user_data(conn,
+                                     Uuid::nil(),
+                                     "support@subseq.io".to_string(),
+                                     "SUBSEQ".to_string(),
+                                     "System".to_string())?;
+
     let entry_node = FlowNode::create(conn, "OPEN")?;
     let exit_node = FlowNode::create(conn, "CLOSED")?;
     let exits = vec![&exit_node];
@@ -104,12 +110,14 @@ fn seed_init_data(conn: &mut PgConnection) -> QueryResult<()> {
 fn seed_user_data(conn: &mut PgConnection,
                   user_id: Uuid,
                   user_email: String,
+                  username: String,
                   job_title: String) -> QueryResult<User> {
     let user = match User::get(conn, user_id) {
         Some(user) => user,
         None => User::create(conn, user_id, &user_email, None)?,
     };
     let data = StoredUserMeta{job_title};
+    UserIdAccount::create(conn, user_id, username, None)?;
     UserMetadata::create(conn, user_id, serde_json::to_value(&data).expect("serde"))?;
 
     Ok(user)
