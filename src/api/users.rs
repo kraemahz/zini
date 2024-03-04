@@ -5,7 +5,7 @@ use chrono::NaiveDateTime;
 use diesel::{PgConnection, QueryResult};
 use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
-use subseq_util::api::InvalidConfigurationError;
+use subseq_util::api::{InvalidConfigurationError, NotFoundError};
 use subseq_util::api::sessions::store_auth_cookie;
 use subseq_util::{
     api::{authenticate, with_db, AuthenticatedUser, DatabaseError},
@@ -82,6 +82,22 @@ async fn get_image(
     ))
 }
 
+pub async fn self_users_handler(
+    auth_user: AuthenticatedUser,
+    session: SessionWithStore<MemoryStore>,
+    db_pool: Arc<DbPool>,
+) -> Result<(impl Reply, SessionWithStore<MemoryStore>), Rejection> {
+    let mut conn = match db_pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return Err(warp::reject::custom(DatabaseError {})),
+    };
+    let user = match User::get(&mut conn, auth_user.id()) {
+        Some(user) => user,
+        None => return Err(warp::reject::custom(NotFoundError{})),
+    };
+    Ok((warp::reply::json(&user), session))
+}
+
 pub async fn list_users_handler(
     page: u32,
     _auth_user: AuthenticatedUser,
@@ -142,8 +158,14 @@ pub fn routes(
     session: MemoryStore,
     pool: Arc<DbPool>,
 ) -> impl Filter<Extract = impl Reply, Error = Rejection> + Clone {
-    let list_users = warp::path("user")
-        .and(warp::path("list"))
+    let whoami = warp::path!("user" / "me")
+        .and(authenticate(idp.clone(), session.clone()))
+        .and(with_db(pool.clone()))
+        .and_then(self_users_handler)
+        .untuple_one()
+        .and_then(store_auth_cookie);
+
+    let list_users = warp::path!("user" / "list")
         .and(warp::path::param())
         .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
@@ -169,5 +191,5 @@ pub fn routes(
         .untuple_one()
         .and_then(store_auth_cookie);
 
-    list_users.or(get_image).or(put_image)
+    whoami.or(list_users).or(get_image).or(put_image)
 }

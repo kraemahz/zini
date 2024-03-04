@@ -315,6 +315,7 @@ pub struct DenormalizedTask {
     pub description: String,
     pub author: DenormalizedUser,
     pub assignee: Option<DenormalizedUser>,
+    pub open: bool
 }
 
 impl DenormalizedTask {
@@ -330,6 +331,9 @@ impl DenormalizedTask {
             }
             None => None,
         };
+        let flows = task.flows(conn)?;
+        let state = TaskFlow::get_active_node(conn, &flows)?;
+        let valid_transitions = FlowConnection::edges(conn, state.id)?;
 
         Ok(Self {
             id: task.id,
@@ -339,6 +343,7 @@ impl DenormalizedTask {
             description: task.description.clone(),
             author,
             assignee,
+            open: !valid_transitions.is_empty(),
         })
     }
 }
