@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::NaiveDateTime;
 use serde::{Serialize, Deserialize};
@@ -131,8 +131,10 @@ pub fn handle_job_request(db_pool: Arc<DbPool>, router: &mut Router, prompt_chan
 
     spawn(async move {
         while let Some(request) = job_request_rx.recv().await {
+            let JobRequest{job_id, response_beam: _, request, user_id, requested_by_id} = request;
+
             let failed = JobResponse {
-                job_id: request.job_id,
+                job_id,
                 response: JobResponseType::Failed
             };
 
@@ -145,7 +147,32 @@ pub fn handle_job_request(db_pool: Arc<DbPool>, router: &mut Router, prompt_chan
                 }
             };
 
-            let JobRequest{job_id, request} = request;
+            // Fetch the assigned user
+            let assigned_user = match User::get(&mut conn, user_id) {
+                Some(user) => user,
+                None => {
+                    tracing::warn!("No such user: {}", user_id);
+                    job_response_tx.send(failed).ok();
+                    continue;
+                }
+            };
+
+            match prompt_channel.get_user_tx(requested_by_id) {
+                Some(tx) => {
+                    // Send this request to the instructions UI
+                    let prompt_payload = PromptRxPayload::JobRequest(
+                        request.clone(),
+                        assigned_user,
+                    );
+                    if tx.send(prompt_payload).is_err() {
+                        tracing::warn!("Channel for user {} is closed", requested_by_id);
+                    }
+                },
+                None => {
+                    tracing::warn!("No open channel for user {}", requested_by_id);
+                }
+            };
+
             // Find the the active job
             let (job, _) = match Job::get(&mut conn, job_id) {
                 Some(j) => j,
@@ -171,33 +198,36 @@ pub fn handle_job_request(db_pool: Arc<DbPool>, router: &mut Router, prompt_chan
                 }
             };
 
-            let assigned_user = match User::get(&mut conn, job.assignee_id) {
-                Some(user) => user,
-                None => {
-                    tracing::warn!("No such user: {}", job.assignee_id);
-                    continue;
-                }
-            };
-            let tx = match prompt_channel.get_user_tx(assigned_user.id) {
-                Some(tx) => tx,
-                None => {
-                    tracing::warn!("No open channel for user {}", job.assignee_id);
-                    continue;
-                }
-            };
-
-            // Send this request to the instructions UI
-            let prompt_payload = PromptRxPayload::JobRequest(
-                JobRequestType::Help(request),
-                assigned_user,
-            );
-            if tx.send(prompt_payload).is_err() {
-                tracing::warn!("Channel for user {} is closed", job.assignee_id);
-                continue;
-            }
         }
         tracing::warn!("handle_job_requests exited");
     });
+}
+
+type JobIdToBeam = HashMap<Uuid, String>;
+
+#[derive(Clone, Debug)]
+pub struct JobRequestCollection {
+    inner: Arc<Mutex<JobIdToBeam>>,
+    tx: mpsc::Sender<JobRequest>,
+}
+
+impl JobRequestCollection {
+    pub fn new(tx: mpsc::Sender<JobRequest>) -> Self {
+        Self { inner: Arc::new(Mutex::new(JobIdToBeam::new())), tx }
+    }
+
+    pub async fn insert(&self, request: JobRequest) {
+        {
+            let mut map = self.inner.lock().unwrap();
+            map.insert(request.job_id, request.response_beam.clone());
+        }
+        self.tx.send(request).await.ok();
+    }
+
+    pub fn remove(&self, job_id: Uuid) -> Option<String> {
+        let mut map = self.inner.lock().unwrap();
+        map.remove(&job_id)
+    }
 }
 
 #[derive(Deserialize)]

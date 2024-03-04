@@ -39,8 +39,11 @@ pub struct JobOwners {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct JobRequest {
+    pub request: JobRequestType,
+    pub response_beam: String,
     pub job_id: Uuid,
-    pub request: JobRequestType
+    pub user_id: Uuid,
+    pub requested_by_id: Uuid,
 }
 
 #[derive(Clone, Debug, Serialize)]

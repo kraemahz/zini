@@ -22,6 +22,7 @@ use crate::api::voice::{
 use crate::interop::{JobRequest, JobResponse};
 use crate::{
     api::prompts::PromptResponseCollection,
+    api::jobs::JobRequestCollection,
     api::tasks::TaskStatePayload,
     interop::{DenormalizedJob, JobResult},
     tables::{Flow, Graph, Project, Task, User},
@@ -44,7 +45,6 @@ const USER_UPDATED_BEAM: &str = "urn:subseq.io:oidc:user:updated";
 const JOB_CREATED_BEAM: &str = "urn:subseq.io:builds:job:created";
 const JOB_PROGRESS_BEAM: &str = "urn:subseq.io:builds:job:progress";
 const JOB_REQUEST_BEAM: &str = "urn:subseq.io:builds:job:request";
-const JOB_RESPONSE_BEAM: &str = "urn:subseq.io:builds:job:response";
 // Tasks from Sage
 const TASK_RUN_BEAM: &str = "urn:subseq.io:tasks:task:run";
 const TASK_RESULT_BEAM: &str = "urn:subseq.io:tasks:task:result";
@@ -86,11 +86,6 @@ async fn setup_user_beams(client: &mut AsyncClient) {
 }
 
 async fn setup_job_beams(client: &mut AsyncClient) {
-    client
-        .add_beam(JOB_RESPONSE_BEAM)
-        .await
-        .expect("Failed setting up client");
-
     client
         .subscribe(TASK_RESULT_BEAM, None)
         .await
@@ -208,7 +203,7 @@ struct WaveletHandler {
     job_result_tx: mpsc::Sender<JobResult>,
     job_created_tx: mpsc::Sender<DenormalizedJob>,
     user_created_tx: broadcast::Sender<UserCreated>,
-    job_request_tx: mpsc::Sender<JobRequest>,
+    job_requests: JobRequestCollection,
     prompt_requests: PromptResponseCollection,
     prompt_beam: String,
     voice_requests: VoiceResponseCollection,
@@ -285,7 +280,22 @@ impl Future for WaveletHandler {
         let Wavelet { beam, photons } = &this.wavelet;
         match beam.as_str() {
             JOB_REQUEST_BEAM => {
-                process_photons_spawn!(JOB_REQUEST_BEAM, photons, JobRequest, this.job_request_tx);
+                tracing::info!("Received {}", JOB_REQUEST_BEAM);
+                let payloads: Vec<_> = photons.into_iter().map(|ph| ph.payload.clone()).collect();
+                let requests = this.job_requests.clone();
+                spawn(async move {
+                    for payload in payloads {
+                        let result: JobRequest = match serde_json::from_slice(&payload) {
+                            Ok(ok) => ok,
+                            Err(err) => {
+                                tracing::error!("Received invalid Photon on {}: {:?}", JOB_REQUEST_BEAM, err);
+                                continue;
+                            }
+                        };
+                        requests.insert(result).await;
+                    }
+                });
+
             }
             TASK_RESULT_BEAM => {
                 process_photons_spawn!(TASK_RESULT_BEAM, photons, JobResult, this.job_result_tx);
@@ -319,6 +329,7 @@ impl Future for WaveletHandler {
     }
 }
 
+
 pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
     // Tables
     let mut user_rx: broadcast::Receiver<User> = router.subscribe();
@@ -341,6 +352,8 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
     let job_tx: mpsc::Sender<DenormalizedJob> = router.get_address().cloned().expect("job_tx");
     let job_result_tx: mpsc::Sender<JobResult> = router.get_address().cloned().expect("job_result_tx");
     let job_request_tx: mpsc::Sender<JobRequest> = router.get_address().cloned().expect("job_request_tx");
+    let job_requests = JobRequestCollection::new(job_request_tx);
+
     let mut job_response_rx: broadcast::Receiver<JobResponse> = router.subscribe();
     let user_created_tx: broadcast::Sender<UserCreated> = router.announce();
 
@@ -359,10 +372,11 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
 
         let voice_beam = voice_response_beam.clone();
         let prompt_beam = prompt_response_beam.clone();
+        let job_requests_wave = job_requests.clone();
 
         let handle_tasks = move |wavelet: Wavelet| WaveletHandler {
             job_result_tx: job_result_tx.clone(),
-            job_request_tx: job_request_tx.clone(),
+            job_requests: job_requests_wave.clone(),
             job_created_tx: job_tx.clone(),
             user_created_tx: user_created_tx.clone(),
             prompt_requests: handler_requests.clone(),
@@ -418,7 +432,17 @@ pub fn emit_events(addr: &str, router: &mut Router, db_pool: Arc<DbPool>) {
                     instant = Instant::now();
                 }
                 msg = job_response_rx.recv() => {
-                    emit_photon!(client, msg, JOB_RESPONSE_BEAM);
+                    if let Ok(msg) = msg {
+                        let JobResponse{job_id, response} = msg;
+                        let beam = job_requests.remove(job_id);
+                        if let Some(beam) = beam {
+                            tracing::info!("Emit {}", beam);
+                            let vec = serde_json::to_vec(&response).unwrap();
+                            if client.emit(beam, vec).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
                 }
                 msg = voice_rx.recv() => {
                     if let Some((msg, tx)) = msg {
