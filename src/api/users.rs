@@ -165,8 +165,7 @@ pub fn routes(
         .untuple_one()
         .and_then(store_auth_cookie);
 
-    let list_users = warp::path!("user" / "list")
-        .and(warp::path::param())
+    let list_users = warp::path!("user" / "list" / u32)
         .and(authenticate(idp.clone(), session.clone()))
         .and(with_db(pool.clone()))
         .and_then(list_users_handler)
