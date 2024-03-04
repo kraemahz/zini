@@ -10,6 +10,7 @@ use subseq_util::Router;
 use tokio::{sync::{broadcast, mpsc}, select, task::spawn};
 use uuid::Uuid;
 
+use super::socket::FrontEndMessage;
 use super::tasks::{create_task, filter_tasks, update_task, QueryPayload};
 use super::users::DenormalizedUser;
 use crate::interop::JobRequestType;
@@ -440,7 +441,7 @@ impl InstructionState {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Connections<'a> {
-    chat_tx: &'a mpsc::Sender<ChatCompletion>,
+    chat_tx: &'a mpsc::Sender<FrontEndMessage>,
     project_tx: &'a broadcast::Sender<Project>,
     task_tx: &'a broadcast::Sender<Task>,
     prompt_tx: &'a mpsc::Sender<PromptTx>,
@@ -457,7 +458,7 @@ impl<'a> Connections<'a> {
             role: ChatRole::System,
             content: Content::Object(serde_json::to_value(&auth_request).expect("Request")),
         };
-        if self.chat_tx.send(chat).await.is_err() {
+        if self.chat_tx.send(FrontEndMessage::InstructMessage(chat)).await.is_err() {
             return false;
         }
         let auth_response = match string_rx.recv().await {
@@ -475,17 +476,17 @@ impl<'a> Connections<'a> {
 
 fn reassign_user(conn: &mut PgConnection,
                  update: &str) -> Option<Option<User>> {
-    if update.contains("FrontendManager") {
+    if update.contains("Frontend") {
         return Some(User::from_username(conn, "FRONTEND"));
     }
-    if update.contains("BackendManager") {
+    if update.contains("Backend") {
         return Some(User::from_username(conn, "BACKEND"));
     }
-    if update.contains("DevopsManager") {
+    if update.contains("Devops") {
         return Some(User::from_username(conn, "DEVOPS"));
     }
     // Don't want to set assignee on single tasks
-    if update.contains("Creating task") {
+    if update.contains("finished") {
         return Some(None);
     }
     None
@@ -495,10 +496,11 @@ async fn instruction_channel_message(response: PromptRxPayload,
                                      conn: &mut PgConnection,
                                      connections: Connections<'_>,
                                      state: &mut InstructionState,
-                                     string_rx: &mut mpsc::Receiver<String>) -> Option<bool> {
+                                     string_rx: &mut mpsc::Receiver<String>) -> Result<bool, InstructError> {
     match response {
         PromptRxPayload::Tool(tool) => {
-            let stream_id = state.stream_id?;
+            let stream_id = state.stream_id
+                .ok_or_else(|| InstructError("stream_id attempted to be used before being set"))?;
             let tool_response = state.run_tool(
                 tool,
                 conn,
@@ -507,7 +509,8 @@ async fn instruction_channel_message(response: PromptRxPayload,
             )
             .await;
             let response = PromptTx::tool_result(stream_id, tool_response);
-            connections.prompt_tx.send(response).await.ok()?;
+            connections.prompt_tx.send(response).await
+                .map_err(|_| InstructError("PromptTx channel is closed"))?;
         }
         PromptRxPayload::Stream { update, response_expected } => {
             // HACKY
@@ -519,66 +522,78 @@ async fn instruction_channel_message(response: PromptRxPayload,
                 role: ChatRole::Assistant,
                 content: Content::Text(update),
             };
-            connections.chat_tx.send(chat).await.ok()?;
+            connections.chat_tx.send(FrontEndMessage::InstructMessage(chat)).await
+                .map_err(|_| InstructError("ChatCompletion channel is closed"))?;
 
             if response_expected {
-                let stream_id = state.stream_id?;
-                let text = string_rx.recv().await?;
+                let stream_id = state.stream_id
+                    .ok_or_else(|| InstructError("stream_id attempted to be used before being set"))?;
+                let text = string_rx.recv().await
+                    .ok_or_else(|| InstructError("StringRx channel is closed"))?;
                 connections.chat_tx
-                    .send(ChatCompletion {
+                    .send(FrontEndMessage::InstructMessage(ChatCompletion {
                         role: ChatRole::User,
                         content: Content::Text(text.clone()),
-                    })
+                    }))
                     .await
                     .ok();
                 let response = PromptTx::stream_update(stream_id, text);
-                connections.prompt_tx.send(response).await.ok()?;
+                connections.prompt_tx.send(response).await
+                    .map_err(|_| InstructError("PromptTx channel is closed"))?;
             }
         }
         PromptRxPayload::JobRequest(job_request_type, user) => {
-            let denorm_user = DenormalizedUser::denormalize(conn, user).ok()?;
+            let denorm_user = DenormalizedUser::denormalize(conn, user)
+                .map_err(|_| InstructError("Could not denormalize user"))?;
             let request = UIRequest { user: denorm_user,
                                       request: job_request_type };
             let chat = ChatCompletion {
                 role: ChatRole::Request,
-                content: Content::Object(serde_json::to_value(&request).ok()?),
+                content: Content::Object(serde_json::to_value(&request)
+                    .map_err(|_| InstructError("serde serialization failed"))?),
             };
-            connections.chat_tx.send(chat).await.ok()?;
+            connections.chat_tx.send(FrontEndMessage::InstructMessage(chat)).await
+                .map_err(|_| InstructError("ChatCompletion channel is closed"))?;
         }
         PromptRxPayload::Close(last_update) => {
             let chat = match last_update {
                 PromptResponseType::Json(json) => ChatCompletion {
                     role: ChatRole::System,
-                    content: Content::Object(serde_json::to_value(&json).ok()?),
+                    content: Content::Object(serde_json::to_value(&json)
+                        .map_err(|_| InstructError("serde serialization failed"))?),
                 },
                 PromptResponseType::Text(text) => ChatCompletion {
                     role: ChatRole::Assistant,
                     content: Content::Text(text),
                 },
             };
-            connections.chat_tx.send(chat).await.ok()?;
+            connections.chat_tx.send(FrontEndMessage::InstructMessage(chat)).await
+                .map_err(|_| InstructError("ChatCompletion channel is closed"))?;
 
             let chat = ChatCompletion {
                 role: ChatRole::System,
                 content: Content::Object(serde_json::json!({"state": "closed"})),
             };
-            connections.chat_tx.send(chat).await.ok()?;
-            return Some(true);
+            connections.chat_tx.send(FrontEndMessage::InstructMessage(chat)).await
+                .map_err(|_| InstructError("ChatCompletion channel is closed"))?;
+            return Ok(true);
         }
     }
-    Some(false)
+    Ok(false)
 }
+
+pub struct InstructError(pub &'static str);
 
 async fn new_instruction_channel(
     db_pool: Arc<DbPool>,
     auth_user: AuthenticatedUser,
     mut string_rx: mpsc::Receiver<String>,
-    chat_tx: mpsc::Sender<ChatCompletion>,
+    chat_tx: mpsc::Sender<FrontEndMessage>,
     project_tx: broadcast::Sender<Project>,
     task_tx: broadcast::Sender<Task>,
     prompt_channel: PromptChannelHandle,
     initialize_prompt_tx: mpsc::Sender<InitializePromptChannel>,
-) -> Option<()> {
+) -> Result<(), InstructError> {
     tracing::info!("New instruction channel");
 
     loop {
@@ -591,8 +606,10 @@ async fn new_instruction_channel(
         };
 
         let project_id = {
-            let mut conn = db_pool.get().ok()?;
-            ActiveProject::get(&mut conn, auth_user.id())?.project_id
+            let mut conn = db_pool.get().map_err(|_| InstructError("DbPool is errored"))?;
+            ActiveProject::get(&mut conn, auth_user.id())
+                .ok_or_else(|| InstructError("Failed to fetch active project"))?
+                .project_id
         };
         let mut state = InstructionState {
             auth_user,
@@ -607,8 +624,8 @@ async fn new_instruction_channel(
         let initial_request = loop {
             select! {
                 msg = prompt_rx.recv() => {
-                    let response = msg?;
-                    let mut conn = db_pool.get().ok()?;
+                    let response = msg.ok_or_else(|| InstructError("PromptRx channel is closed"))?;
+                    let mut conn = db_pool.get().map_err(|_| InstructError("DbPool is errored"))?;
                     instruction_channel_message(response,
                                                 &mut conn,
                                                 connections,
@@ -616,32 +633,34 @@ async fn new_instruction_channel(
                                                 &mut string_rx).await?;
                 }
                 msg = string_rx.recv() => {
-                    let msg = msg?;
+                    let msg = msg.ok_or_else(|| InstructError("string_rx channel is closed"))?;
                     break msg;
                 }
             }
         };
 
         chat_tx
-            .send(ChatCompletion {
+            .send(FrontEndMessage::InstructMessage(ChatCompletion {
                 role: ChatRole::User,
                 content: Content::Text(initial_request.clone()),
-            })
+            }))
             .await
             .ok();
         tracing::info!("Initial request {}", initial_request);
         let handshake = PromptTx::new_stream(initial_request);
+        state.stream_id = Some(handshake.stream_id);
 
-        let stream_id = handshake.stream_id;
         initialize_prompt_tx
-            .send(InitializePromptChannel(stream_id, prompt_request_rx, prompt_response_tx))
+            .send(InitializePromptChannel(state.stream_id.unwrap(),
+                                          prompt_request_rx,
+                                          prompt_response_tx))
             .await
-            .ok()?;
-        prompt_tx.send(handshake).await.ok()?;
+            .map_err(|_| InstructError("InitializePromptChannel channel is closed"))?;
+        prompt_tx.send(handshake).await.map_err(|_| InstructError("PromptTx channel is closed"))?;
 
         loop {
-            let response = prompt_rx.recv().await?;
-            let mut conn = db_pool.get().ok()?;
+            let response = prompt_rx.recv().await.ok_or_else(|| InstructError("PromptRx channel is closed"))?;
+            let mut conn = db_pool.get().map_err(|_| InstructError("DbPool is errored"))?;
             tracing::info!("Prompt rx {:?}", response);
             if instruction_channel_message(response,
                                            &mut conn,
@@ -657,7 +676,7 @@ async fn new_instruction_channel(
 pub struct InstructChannel(
     pub AuthenticatedUser,
     pub mpsc::Receiver<String>,
-    pub mpsc::Sender<ChatCompletion>,
+    pub mpsc::Sender<FrontEndMessage>,
 );
 
 pub fn instruction_channel_task(db_pool: Arc<DbPool>, router: &mut Router, prompt_channel: PromptChannelHandle) {
@@ -669,15 +688,26 @@ pub fn instruction_channel_task(db_pool: Arc<DbPool>, router: &mut Router, promp
 
     spawn(async move {
         while let Some(InstructChannel(auth_user, rx, tx)) = instruction_config_rx.recv().await {
-            spawn(new_instruction_channel(db_pool.clone(),
-                                          auth_user,
-                                          rx,
-                                          tx,
-                                          project_tx.clone(),
-                                          task_tx.clone(),
-                                          prompt_channel.clone(),
-                                          prompt_request_tx.clone(),
-            ));
+            let db_pool = db_pool.clone();
+            let project_tx = project_tx.clone();
+            let task_tx = task_tx.clone();
+            let prompt_channel = prompt_channel.clone();
+            let prompt_request_tx = prompt_request_tx.clone();
+
+            spawn(async move {
+                if let Err(err) = new_instruction_channel(
+                        db_pool,
+                        auth_user,
+                        rx,
+                        tx,
+                        project_tx,
+                        task_tx,
+                        prompt_channel,
+                        prompt_request_tx,
+                    ).await {
+                    tracing::warn!("InsructError({})", err.0);
+                }
+            });
         }
     });
 }

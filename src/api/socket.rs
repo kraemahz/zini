@@ -76,10 +76,10 @@ async fn client_websocket(
     let (mut write, mut read) = ws.split();
 
     let (output_tx, mut output_rx) = mpsc::channel::<FrontEndMessage>(WEBSOCKET_BUFFER_SIZE);
-    let (instruct_out_tx, mut instruct_out_rx) = mpsc::channel(WEBSOCKET_BUFFER_SIZE);
     let (instruct_in_tx, instruct_in_rx) = mpsc::channel(WEBSOCKET_BUFFER_SIZE);
     let (audio_tx, audio_rx) = mpsc::channel(WEBSOCKET_BUFFER_SIZE);
 
+    let instruct_out_tx = output_tx.clone();
     if instruct_config_tx
         .send(InstructChannel(auth_user, instruct_in_rx, instruct_out_tx))
         .await
@@ -91,20 +91,6 @@ async fn client_websocket(
 
     let (audio_text_tx, mut audio_text_rx) = mpsc::channel(WEBSOCKET_BUFFER_SIZE);
     create_audio_timing_task(audio_text_tx, audio_rx, audio_event);
-
-    let output_instruct_tx = output_tx.clone();
-    spawn(async move {
-        while let Some(chat) = instruct_out_rx.recv().await {
-            if output_instruct_tx
-                .send(FrontEndMessage::InstructMessage(chat))
-                .await
-                .is_err()
-            {
-                break;
-            }
-        }
-        tracing::info!("{} instruct out handler exited", user_id);
-    });
 
     // TODO: handle context -> send message to context to fill in text for feedback
     // TODO: handle streaming messages -> check finalized bit
