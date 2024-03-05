@@ -11,7 +11,7 @@ use tokio::{sync::{broadcast, mpsc}, select, task::spawn};
 use uuid::Uuid;
 
 use super::socket::FrontEndMessage;
-use super::tasks::{create_task, filter_tasks, update_task, QueryPayload};
+use super::tasks::{create_task, filter_tasks, update_task, QueryPayload, DenormalizedTask};
 use super::users::DenormalizedUser;
 use crate::interop::JobRequestType;
 use crate::tables::{ActiveProject, Flow, Project, Task, TaskLinkType, TaskUpdate, User};
@@ -367,8 +367,10 @@ impl InstructionState {
                     task.update(conn, self.auth_user.id(),
                                 TaskUpdate::AssignOther { user_id: user.id }).ok();
                 }
-
                 connections.task_tx.send(task.clone()).ok();
+                if let Ok(task) = DenormalizedTask::denormalize(conn, &task) {
+                    connections.chat_tx.send(FrontEndMessage::AddTask(task)).await.ok();
+                }
                 ToolResult::CreateTask(TaskSummary {
                     task_id: task.id,
                     title: task.title,
@@ -425,13 +427,14 @@ impl InstructionState {
                 if project.set_active_project(conn, user.id).is_err() {
                     return ToolResult::Error("Could not set the active project".to_string());
                 }
-                connections.project_tx.send(project.clone()).ok();
-
                 self.project_id = project.id;
+                connections.project_tx.send(project.clone()).ok();
+                connections.chat_tx.send(FrontEndMessage::SetProject(project)).await.ok();
+
                 self.check_auth = false; // When the project is set to a new one we can ignore auth for
                                          // the rest of the project.
                 ToolResult::BeginProject {
-                    project_id: project.id,
+                    project_id: self.project_id,
                 }
             }
         }

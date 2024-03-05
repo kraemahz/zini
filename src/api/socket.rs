@@ -14,7 +14,10 @@ use warp::filters::ws::{Message, WebSocket};
 use warp::{Filter, Rejection, Reply};
 use warp_sessions::{MemoryStore, SessionWithStore};
 
+use crate::tables::Project;
+
 use super::prompts::{ChatCompletion, InstructChannel};
+use super::tasks::DenormalizedTask;
 use super::voice::{create_audio_timing_task, AudioContext, AudioData, AudioEventChannel};
 
 const WEBSOCKET_BUFFER_SIZE: usize = 1024;
@@ -29,7 +32,8 @@ pub enum WebSocketMessage {
 pub enum FrontEndMessage {
     InstructMessage(ChatCompletion),
     InstructClear,
-    SetProject(String),
+    SetProject(Project),
+    AddTask(DenormalizedTask),
     Ping,
 }
 
@@ -50,7 +54,14 @@ impl Serialize for FrontEndMessage {
             FrontEndMessage::SetProject(project) => {
                 let mut state = serializer.serialize_struct("FrontEndMessage", 2)?;
                 state.serialize_field("channel", "PROJECT-SET")?;
-                state.serialize_field("project", &project)?;
+                state.serialize_field("id", &project.id)?;
+                state.serialize_field("name", &project.name)?;
+                state
+            }
+            FrontEndMessage::AddTask(task) => {
+                let mut state = serializer.serialize_struct("FrontEndMessage", 2)?;
+                state.serialize_field("channel", "TASK-ADD")?;
+                state.serialize_field("task", &task)?;
                 state
             }
             FrontEndMessage::InstructMessage(completion) => {
