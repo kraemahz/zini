@@ -15,25 +15,29 @@ use warp_sessions::{MemoryStore, SessionWithStore};
 use crate::interop::{JobResult, ActionTaken};
 use crate::tables::{HelpResolution, DenormalizedHelpAction};
 use crate::{
+    api::tasks::DenormalizedTask,
+    api::users::DenormalizedUser,
     interop::{
-        DenormalizedJob,
+        DenormalizedJob as InteropDenormalizedJob,
         JobRequestType,
         JobRequest,
         JobResponseType,
         JobResponse
     },
     tables::{
-        User,
+        AwaitingHelp,
         Job,
         JobResult as JobResultTable,
-        AwaitingHelp
+        Project,
+        Task,
+        User,
     }
 };
 
 use super::prompts::{PromptRxPayload, PromptChannelHandle};
 
 pub fn handle_new_job(db_pool: Arc<DbPool>, router: &mut Router) {
-    let mut job_rx: mpsc::Receiver<DenormalizedJob> = router.create_channel();
+    let mut job_rx: mpsc::Receiver<InteropDenormalizedJob> = router.create_channel();
 
     spawn(async move {
         while let Some(job) = job_rx.recv().await {
@@ -46,7 +50,7 @@ pub fn handle_new_job(db_pool: Arc<DbPool>, router: &mut Router) {
                 }
             };
 
-            let DenormalizedJob{
+            let InteropDenormalizedJob{
                 id,
                 project_id,
                 task_id,
@@ -252,14 +256,19 @@ async fn filter_jobs_handler(
     let result = Job::query(&mut conn, auth_user.id(), &query, page, page_size)
         .map_err(|_| warp::reject::custom(DatabaseError{}))?;
 
+
     let jobs: Vec<_> = result.into_iter()
-        .map(|(job, job_result)| {
-            DenormalizedJobPartial {
+        .filter_map(|(job, job_result)| {
+            let task = Task::get(&mut conn, job.task_id)?;
+            let project = Project::get(&mut conn, job.project_id)?;
+
+            Some(DenormalizedJobPartial {
                 id: job.id,
-                project_id: job.project_id,
+                task_name: task.title,
+                project,
                 job_name: job.name,
                 succeeded: job_result.map(|r| r.succeeded)
-            }
+            })
         })
         .collect();
 
@@ -284,16 +293,20 @@ async fn filter_logs_handler(
         .map_err(|_| warp::reject::custom(DatabaseError{}))?;
 
     let jobs: Vec<_> = result.into_iter()
-        .map(|(job, job_result)| {
-            let job_result = job_result.expect("all jobs are completed");
-            DenormalizedJobLogs {
+        .filter_map(|(job, job_result)| {
+            let job_result = job_result?;
+            let task = Task::get(&mut conn, job.task_id)?;
+            let project = Project::get(&mut conn, job.project_id)?;
+
+            Some(DenormalizedJobLogs {
                 id: job.id,
-                project_id: job.project_id,
+                project,
                 job_name: job.name,
+                task_name: task.title,
                 completion_time: job_result.completion_time,
                 succeeded: job_result.succeeded,
                 job_log: job_result.job_log,
-            }
+            })
         })
         .collect();
 
@@ -317,7 +330,8 @@ pub struct DenormalizedJobResult {
 #[derive(Serialize)]
 pub struct DenormalizedJobPartial {
     pub id: Uuid,
-    pub project_id: Uuid,
+    pub task_name: String,
+    pub project: Project,
     pub job_name: String,
     pub succeeded: Option<bool>,
 }
@@ -325,20 +339,24 @@ pub struct DenormalizedJobPartial {
 #[derive(Serialize)]
 pub struct DenormalizedJobLogs {
     pub id: Uuid,
-    pub project_id: Uuid,
+    pub project: Project,
+    pub task_name: String,
     pub job_name: String,
+    pub job_log: String,
     pub completion_time: NaiveDateTime,
     pub succeeded: bool,
-    pub job_log: String
 }
 
 #[derive(Serialize)]
 pub struct DenormalizedJobFull {
     pub id: Uuid,
-    pub project_id: Uuid,
     pub job_name: String,
+    pub task: DenormalizedTask,
+    pub project: Project,
     pub result: Option<DenormalizedJobResult>,
     pub help_request: Option<DenormalizedHelpRequest>,
+    pub assigned_to: DenormalizedUser,
+    pub requested_by: DenormalizedUser,
 }
 
 async fn get_job_handler(
@@ -356,6 +374,21 @@ async fn get_job_handler(
         Some(job) => job,
         None => return Err(warp::reject::custom(NotFoundError{})),
     };
+    let project = Project::get(&mut conn, job.project_id)
+        .ok_or_else(|| warp::reject::custom(NotFoundError{}))?;
+    let task = Task::get(&mut conn, job.task_id)
+        .ok_or_else(|| warp::reject::custom(NotFoundError{}))?;
+    let task = DenormalizedTask::denormalize(&mut conn, &task)
+        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+    let assigned_to = User::get(&mut conn, job.assignee_id)
+        .ok_or_else(|| warp::reject::custom(NotFoundError{}))?;
+    let assigned_to = DenormalizedUser::denormalize(&mut conn, assigned_to)
+        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+    let requested_by = User::get(&mut conn, job.created_id)
+        .ok_or_else(|| warp::reject::custom(NotFoundError{}))?;
+    let requested_by = DenormalizedUser::denormalize(&mut conn, requested_by)
+        .map_err(|_| warp::reject::custom(DatabaseError{}))?;
+
     let help = AwaitingHelp::next_open_help(&mut conn, &job);
     let help_request = if let Some(help) = help.as_ref() {
         let resolution = HelpResolution::get(&mut conn, help.id);
@@ -379,12 +412,16 @@ async fn get_job_handler(
             job_log: result.job_log
         });
 
+
     let denormalized_job = DenormalizedJobFull {
         id: job.id,
-        project_id: job.project_id,
         job_name: job.name,
+        task,
+        project,
         result: job_result,
-        help_request
+        help_request,
+        assigned_to,
+        requested_by
     };
 
     Ok((warp::reply::json(&denormalized_job), session))
