@@ -112,13 +112,14 @@ fn seed_user_data(conn: &mut PgConnection,
                   user_email: String,
                   username: String,
                   job_title: String) -> QueryResult<User> {
-    let user = match User::get(conn, user_id) {
+    let user = match User::from_email(conn, &user_email) {
         Some(user) => user,
         None => User::create(conn, user_id, &user_email, None)?,
     };
     let data = StoredUserMeta{job_title};
-    UserIdAccount::create(conn, user_id, username, None)?;
-    UserMetadata::create(conn, user_id, serde_json::to_value(&data).expect("serde"))?;
+    UserIdAccount::create(conn, user_id, username, None).ok();
+    UserMetadata::create(conn, user_id,
+                         serde_json::to_value(&data).expect("serde")).ok();
 
     Ok(user)
 }
