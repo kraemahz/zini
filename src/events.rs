@@ -56,8 +56,8 @@ const TASK_ASSIGNEE_BEAM: &str = "urn:subseq.io:tasks:task:assignee:changed";
 const TASK_STATE_BEAM: &str = "urn:subseq.io:tasks:task:state:changed";
 
 // Projects
-pub const PROJECT_CREATED_BEAM: &str = "urn:subseq.io:tasts:project:created";
-const PROJECT_UPDATED_BEAM: &str = "urn:subseq.io:tasks:project:updated";
+pub const PROJECT_CREATED_BEAM: &str = "urn:subseq.io:projects:project:created";
+const PROJECT_UPDATED_BEAM: &str = "urn:subseq.io:projects:project:updated";
 
 // Flows
 const FLOW_CREATED_BEAM: &str = "urn:subseq.io:tasks:workflow:created";
